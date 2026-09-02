@@ -1,4 +1,4 @@
-# Design decisions through Phase 4
+# Design decisions through Phase 5
 
 ## Why memory mapping
 
@@ -179,9 +179,38 @@ benchmark compares pinned/pageable transfers and serial/multiple-stream copies,
 but actual overlap depends on the GPU copy engines, PCIe topology, driver, buffer
 size, and system load.
 
-## Future tensor execution
+## Tensor execution boundary
 
-Future tensor code will consume pool-backed buffers on the compute stream, wait on
-transfer events, and publish `CUDA_KERNEL_STARTED`/`CUDA_KERNEL_COMPLETED` around
-backend or library launches. No tensor shape assumptions, model formats, CUDA
-kernels, cuBLAS calls, or transformer operations are introduced in Phase 4.
+Tensor storage is shared separately from tensor metadata. This allows reshape to
+create a zero-copy view and lets an expert's pool-backed `DeviceBuffer` become a
+tensor without changing ownership. Shapes validate both logical element count and
+the full addressable span implied by strides. Operations currently require
+contiguous layouts, making unsupported views fail before pointer arithmetic.
+
+The tensor backend is distinct from `ComputeBackend`: the latter owns bytes,
+streams, and copies, while the former validates mathematical shape/dtype contracts
+and selects an implementation. CPU operations are intentionally simple reference
+loops. They prioritize deterministic correctness and sanitizer visibility over
+vectorization.
+
+## Why cuBLAS comes before custom kernels
+
+FP32 GEMM is the first execution primitive because an expert projection reduces
+to matrix multiplication. cuBLAS already provides architecture-tuned GEMM,
+well-defined stream behavior, and mature correctness on NVIDIA GPUs. HyperMoE
+adapts row-major tensors to cuBLAS's column-major SGEMM convention by computing
+the transposed result layout without inserting transpose copies.
+
+Writing a custom GEMM before profiling would duplicate a highly optimized library
+and expand the correctness surface. Custom kernels remain candidates for fused
+bias/activation/gating, dequantization, or layouts that measurement shows cuBLAS
+cannot handle efficiently. CUDA elementwise add/multiply currently use an explicit
+host-staged reference path rather than pretending that this fallback is optimized.
+
+## Expert execution scope
+
+`MatmulExpertExecutor` performs exactly `output = input × expert_weights`. The
+resident-tensor bridge verifies that shape and dtype consume the complete expert
+buffer before sharing it. No assumption is made about expert MLP structure,
+activation functions, gate weights, routing, quantization layout, or any specific
+model family. Those contracts belong to later inspected model adapters.

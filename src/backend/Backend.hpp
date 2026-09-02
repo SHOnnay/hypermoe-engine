@@ -37,6 +37,7 @@ public:
 
     [[nodiscard]] virtual BackendKind kind() const noexcept = 0;
     [[nodiscard]] virtual std::string_view name() const noexcept = 0;
+    [[nodiscard]] virtual int deviceOrdinal() const noexcept = 0;
     [[nodiscard]] virtual bool isAvailable() const noexcept = 0;
 
     [[nodiscard]] virtual void* allocate(std::size_t sizeBytes) = 0;

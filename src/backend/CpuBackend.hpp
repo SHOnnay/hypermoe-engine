@@ -14,6 +14,7 @@ public:
 
     [[nodiscard]] BackendKind kind() const noexcept override;
     [[nodiscard]] std::string_view name() const noexcept override;
+    [[nodiscard]] int deviceOrdinal() const noexcept override;
     [[nodiscard]] bool isAvailable() const noexcept override;
     [[nodiscard]] void* allocate(std::size_t sizeBytes) override;
     void free(void* pointer) noexcept override;

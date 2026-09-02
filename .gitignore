@@ -12,6 +12,7 @@ CMakeCache.txt
 hardware_report.json
 cuda_report.json
 pipeline_report.json
+tensor_report.json
 phase2_benchmark.json
 model/experts.bin
 model/experts.index

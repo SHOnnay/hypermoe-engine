@@ -37,6 +37,11 @@ struct ProfilerSnapshot {
     std::chrono::nanoseconds totalQueueWait{};
     std::chrono::nanoseconds overlapEligibleTransferTime{};
     std::chrono::nanoseconds hiddenTransferTime{};
+    std::chrono::nanoseconds kernelTime{};
+    std::chrono::nanoseconds matmulTime{};
+    std::uint64_t tensorAllocations{};
+    double gpuUtilizationPercent{};
+    double peakGpuUtilizationPercent{};
     double modeledLatencyMs{};
 
     [[nodiscard]] double cacheHitRate() const noexcept;
@@ -68,6 +73,10 @@ public:
     void recordQueueWait(std::chrono::nanoseconds duration);
     void recordTransferOverlap(std::chrono::nanoseconds eligible,
                                std::chrono::nanoseconds hidden);
+    void recordKernelTime(std::chrono::nanoseconds duration);
+    void recordMatmulTime(std::chrono::nanoseconds duration);
+    void recordTensorAllocation(std::uint64_t count = 1);
+    void observeGpuUtilization(double percentage);
 
     [[nodiscard]] ProfilerSnapshot snapshot() const;
     [[nodiscard]] std::string toJson() const;

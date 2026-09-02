@@ -114,6 +114,7 @@ CudaRuntimeInfo CudaBackend::query(int device) {
 
 BackendKind CudaBackend::kind() const noexcept { return BackendKind::Cuda; }
 std::string_view CudaBackend::name() const noexcept { return impl_->deviceName; }
+int CudaBackend::deviceOrdinal() const noexcept { return impl_->device; }
 bool CudaBackend::isAvailable() const noexcept {
     return impl_->runtime && impl_->runtime->available();
 }

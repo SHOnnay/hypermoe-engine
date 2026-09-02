@@ -1,6 +1,7 @@
 #include "hypermoe/experts/expert_manager.hpp"
 
 #include "memory/TransferManager.hpp"
+#include "tensor/Tensor.hpp"
 
 #include <chrono>
 #include <stdexcept>
@@ -174,6 +175,28 @@ ExpertManager::residentDeviceWeights(ExpertId id) const {
         throw std::out_of_range("unknown expert id");
     }
     return it->second.deviceWeights;
+}
+
+tensor::Tensor ExpertManager::residentDeviceTensor(
+    ExpertId id, const tensor::Shape& shape, tensor::DType dtype) const {
+    std::scoped_lock lock(mutex_);
+    const auto it = experts_.find(id);
+    if (it == experts_.end()) throw std::out_of_range("unknown expert id");
+    const auto& managed = it->second;
+    if (managed.metadata.location != MemoryTier::Vram || !managed.deviceWeights) {
+        throw std::logic_error("expert does not own a resident device buffer");
+    }
+    const auto elementBytes = tensor::sizeOf(dtype);
+    if (elementBytes == 0 ||
+        shape.storageElementCount() > managed.metadata.sizeBytes / elementBytes ||
+        shape.storageElementCount() * elementBytes != managed.metadata.sizeBytes) {
+        throw std::invalid_argument("tensor metadata does not match expert weight bytes");
+    }
+    const auto& buffer = managed.deviceWeights;
+    const auto device = buffer->backend()->kind() == backend::BackendKind::Cuda
+                            ? tensor::Device::cuda(buffer->backend()->deviceOrdinal())
+                            : tensor::Device::cpu();
+    return tensor::Tensor::fromDeviceBuffer(shape, dtype, device, buffer);
 }
 
 std::size_t ExpertManager::expertCount() const {

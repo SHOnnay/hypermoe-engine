@@ -16,6 +16,11 @@ class TransferManager;
 namespace backend {
 class DeviceBuffer;
 }
+namespace tensor {
+class Shape;
+class Tensor;
+enum class DType;
+}
 
 enum class RequestSource {
     VramHit,
@@ -60,6 +65,8 @@ public:
     residentWeights(ExpertId id) const;
     [[nodiscard]] std::shared_ptr<backend::DeviceBuffer>
     residentDeviceWeights(ExpertId id) const;
+    [[nodiscard]] tensor::Tensor residentDeviceTensor(
+        ExpertId id, const tensor::Shape& shape, tensor::DType dtype) const;
     [[nodiscard]] std::size_t expertCount() const;
     [[nodiscard]] ExpertManagerStats stats() const;
 

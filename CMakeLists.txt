@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(HyperMoE VERSION 0.4.0 LANGUAGES CXX)
+project(HyperMoE VERSION 0.5.0 LANGUAGES CXX)
 
 option(HYPERMOE_BUILD_TESTS "Build HyperMoE tests" ON)
 option(HYPERMOE_BUILD_BENCHMARKS "Build HyperMoE simulation benchmarks" ON)
@@ -38,6 +38,11 @@ add_library(hypermoe
     src/scheduler/RuntimeEvent.cpp
     src/scheduler/Prefetcher.cpp
     src/scheduler/Scheduler.cpp
+    src/tensor/Shape.cpp
+    src/tensor/Tensor.cpp
+    src/tensor/backend/CpuTensorBackend.cpp
+    src/tensor/backend/CudaTensorBackend.cpp
+    src/experts/ExpertExecutor.cpp
 )
 add_library(HyperMoE::hypermoe ALIAS hypermoe)
 
@@ -51,9 +56,11 @@ target_include_directories(hypermoe
 target_link_libraries(hypermoe PUBLIC Threads::Threads)
 
 if(CUDAToolkit_FOUND)
-    target_compile_definitions(hypermoe PUBLIC HYPERMOE_HAS_CUDA=1)
-    target_link_libraries(hypermoe PUBLIC CUDA::cudart)
-    message(STATUS "HyperMoE CUDA backend enabled")
+    target_compile_definitions(hypermoe PUBLIC
+        HYPERMOE_HAS_CUDA=1
+        HYPERMOE_HAS_CUBLAS=1)
+    target_link_libraries(hypermoe PUBLIC CUDA::cudart CUDA::cublas)
+    message(STATUS "HyperMoE CUDA and cuBLAS backends enabled")
 else()
     message(STATUS "HyperMoE CUDA backend disabled; CPU fallback enabled")
 endif()
@@ -94,6 +101,10 @@ if(HYPERMOE_BUILD_TESTS)
     add_executable(hypermoe_phase4_tests tests/phase4_tests.cpp)
     target_link_libraries(hypermoe_phase4_tests PRIVATE HyperMoE::hypermoe)
     add_test(NAME hypermoe_phase4 COMMAND hypermoe_phase4_tests)
+
+    add_executable(hypermoe_phase5_tests tests/phase5_tests.cpp)
+    target_link_libraries(hypermoe_phase5_tests PRIVATE HyperMoE::hypermoe)
+    add_test(NAME hypermoe_phase5 COMMAND hypermoe_phase5_tests)
 endif()
 
 if(HYPERMOE_BUILD_BENCHMARKS)
@@ -114,4 +125,8 @@ if(HYPERMOE_BUILD_BENCHMARKS)
     add_executable(hypermoe_cuda_benchmark
         benchmarks/cuda/cuda_benchmark.cpp)
     target_link_libraries(hypermoe_cuda_benchmark PRIVATE HyperMoE::hypermoe)
+
+    add_executable(hypermoe_tensor_benchmark
+        benchmarks/tensor/tensor_benchmark.cpp)
+    target_link_libraries(hypermoe_tensor_benchmark PRIVATE HyperMoE::hypermoe)
 endif()

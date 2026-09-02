@@ -60,7 +60,8 @@ TransferManager::TransferManager(std::shared_ptr<const storage::DiskLoader> load
     }
     if (backend_->kind() == backend::BackendKind::Cuda) {
         memoryPool_ = std::make_shared<backend::CudaMemoryPool>(backend_);
-        cudaRuntime_ = std::make_shared<backend::CudaRuntime>();
+        cudaRuntime_ =
+            std::make_shared<backend::CudaRuntime>(backend_->deviceOrdinal());
         if (!cudaRuntime_->available()) {
             throw std::runtime_error("CUDA backend has no matching runtime device");
         }

@@ -20,6 +20,7 @@ CpuBackend::~CpuBackend() {
 
 BackendKind CpuBackend::kind() const noexcept { return BackendKind::Cpu; }
 std::string_view CpuBackend::name() const noexcept { return "CPU"; }
+int CpuBackend::deviceOrdinal() const noexcept { return 0; }
 bool CpuBackend::isAvailable() const noexcept { return true; }
 
 void* CpuBackend::allocate(std::size_t sizeBytes) {

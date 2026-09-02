@@ -1,10 +1,10 @@
 # HyperMoE Engine
 
 HyperMoE is a C++20 inference-runtime project for hierarchical Mixture-of-Experts
-memory management across VRAM, pinned RAM, ordinary RAM, and NVMe. Phase 4 adds a
-production-oriented, optional NVIDIA CUDA foundation beneath the asynchronous
-expert scheduler: device/runtime ownership, persistent role-based streams,
-event-completed copies, and a reusable VRAM allocation pool.
+memory management across VRAM, pinned RAM, ordinary RAM, and NVMe. Phase 5 adds a
+model-independent tensor and expert-compute foundation above the CPU/optional
+CUDA runtime: validated shape/stride metadata, shared RAII storage, backend
+switching, reference CPU operations, and cuBLAS FP32 GEMM when available.
 There is intentionally no transformer inference, model adapter, or custom CUDA
 kernel implementation yet.
 
@@ -21,6 +21,7 @@ ctest --test-dir build --output-on-failure
 ./build/hypermoe_pipeline_benchmark --tokens=100000 \
   --report=pipeline_report.json
 ./build/hypermoe_cuda_benchmark --report=cuda_report.json
+./build/hypermoe_tensor_benchmark --report=tensor_report.json
 ```
 
 Enable runtime memory checks with:
@@ -121,3 +122,27 @@ The CUDA benchmark measures direct and pooled VRAM allocation rate, pinned and
 pageable host-to-device bandwidth, device-to-host bandwidth, and two-stream copy
 overlap. When CUDA is not compiled or no NVIDIA device is usable, it still emits a
 valid JSON report with zero GPU measurements and an explicit skip reason.
+
+## Tensor and expert execution foundation
+
+`Tensor` is a lightweight view over shared RAII storage. It records shape,
+element strides, `FP32`/`FP16`/`INT8` dtype, CPU/CUDA device and ordinal, logical
+bytes, and backing-storage bytes. Shape and byte multiplication are checked for
+overflow; strided tensors validate their full addressable span. Reshape shares
+storage and currently requires contiguous layouts.
+
+`TensorBackend` defines allocation, copy, matrix multiplication, elementwise add
+and multiply, reshape, and synchronization. `CpuTensorBackend` supplies the
+portable correctness implementation. `CudaTensorBackend` uses cuBLAS SGEMM for
+contiguous rank-2 FP32 matrices and handles CPU↔CUDA and CUDA↔CUDA copies. CUDA and
+cuBLAS remain optional CMake capabilities.
+
+`MatmulExpertExecutor` implements only `output = input × expert_weights`.
+`ExpertManager::residentDeviceTensor` safely wraps an expert's transferred backend
+buffer after validating the requested tensor metadata against its stored byte
+size. Activation functions, gates, routing, tensor formats, and transformer
+semantics remain intentionally absent.
+
+The tensor benchmark reports CPU/CUDA FP32 GEMM, tensor allocation, copy, and
+synchronization measurements. CUDA fields remain zero with an explicit skip
+reason when cuBLAS or an NVIDIA device is unavailable.

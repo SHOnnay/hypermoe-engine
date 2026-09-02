@@ -146,6 +146,29 @@ void Profiler::recordTransferOverlap(std::chrono::nanoseconds eligible,
     metrics_.hiddenTransferTime += std::min(eligible, hidden);
 }
 
+void Profiler::recordKernelTime(std::chrono::nanoseconds duration) {
+    std::scoped_lock lock(mutex_);
+    metrics_.kernelTime += duration;
+}
+
+void Profiler::recordMatmulTime(std::chrono::nanoseconds duration) {
+    std::scoped_lock lock(mutex_);
+    metrics_.matmulTime += duration;
+}
+
+void Profiler::recordTensorAllocation(std::uint64_t count) {
+    std::scoped_lock lock(mutex_);
+    metrics_.tensorAllocations += count;
+}
+
+void Profiler::observeGpuUtilization(double percentage) {
+    const auto bounded = std::clamp(percentage, 0.0, 100.0);
+    std::scoped_lock lock(mutex_);
+    metrics_.gpuUtilizationPercent = bounded;
+    metrics_.peakGpuUtilizationPercent =
+        std::max(metrics_.peakGpuUtilizationPercent, bounded);
+}
+
 ProfilerSnapshot Profiler::snapshot() const {
     std::scoped_lock lock(mutex_);
     return metrics_;
@@ -163,6 +186,10 @@ std::string Profiler::toJson() const {
         std::chrono::duration<double, std::milli>(metrics.nvmeReadTime).count();
     const auto ramCopyMs =
         std::chrono::duration<double, std::milli>(metrics.ramCopyTime).count();
+    const auto kernelMs =
+        std::chrono::duration<double, std::milli>(metrics.kernelTime).count();
+    const auto matmulMs =
+        std::chrono::duration<double, std::milli>(metrics.matmulTime).count();
     std::ostringstream output;
     output << std::fixed << std::setprecision(6)
            << "{\n"
@@ -196,6 +223,13 @@ std::string Profiler::toJson() const {
            << "  \"average_queue_wait_ms\": " << metrics.averageQueueWaitMs() << ",\n"
            << "  \"transfer_overlap_percentage\": "
            << metrics.transferOverlapPercentage() << ",\n"
+           << "  \"kernel_time_ms\": " << kernelMs << ",\n"
+           << "  \"matmul_time_ms\": " << matmulMs << ",\n"
+           << "  \"tensor_allocations\": " << metrics.tensorAllocations << ",\n"
+           << "  \"gpu_utilization_percent\": "
+           << metrics.gpuUtilizationPercent << ",\n"
+           << "  \"peak_gpu_utilization_percent\": "
+           << metrics.peakGpuUtilizationPercent << ",\n"
            << "  \"modeled_latency_ms\": " << metrics.modeledLatencyMs << "\n"
            << "}\n";
     return output.str();
