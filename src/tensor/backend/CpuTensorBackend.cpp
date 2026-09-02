@@ -23,23 +23,32 @@ std::size_t tensorStorageBytes(const Shape& shape, DType dtype) {
     return shape.storageElementCount() * elementBytes;
 }
 
-void validateCpuContiguous(const Tensor& tensor, const char* operation) {
+void validateCpuContiguous(TensorView tensor, const char* operation) {
     if (!tensor || tensor.device().type != DeviceType::CPU || !tensor.isContiguous()) {
         throw std::invalid_argument(std::string(operation) +
                                     " requires a contiguous CPU tensor");
     }
 }
 
-void validateElementwise(const Tensor& left,
-                         const Tensor& right,
-                         const Tensor& output,
+std::shared_ptr<void> pin(TensorView tensor, const char* operation) {
+    auto owner = tensor.lockOwner();
+    if (!owner) {
+        throw std::invalid_argument(std::string(operation) +
+                                    " received expired tensor storage");
+    }
+    return owner;
+}
+
+void validateElementwise(TensorView left,
+                         TensorView right,
+                         TensorView output,
                          const char* operation) {
     validateCpuContiguous(left, operation);
     validateCpuContiguous(right, operation);
     validateCpuContiguous(output, operation);
     if (left.dtype() != DType::FP32 || right.dtype() != DType::FP32 ||
         output.dtype() != DType::FP32 || left.shape() != right.shape() ||
-        left.shape() != output.shape()) {
+        left.shape() != output.shape() || !output.writable()) {
         throw std::invalid_argument(std::string(operation) +
                                     " requires equal-shape FP32 tensors");
     }
@@ -63,25 +72,31 @@ Tensor CpuTensorBackend::allocateTensor(const Shape& shape, DType dtype) {
     return tensor;
 }
 
-void CpuTensorBackend::copyTensor(const Tensor& source, Tensor& destination) {
+void CpuTensorBackend::copyTensor(TensorView source, TensorView destination) {
+    [[maybe_unused]] const auto sourceOwner = pin(source, "CPU tensor copy");
+    [[maybe_unused]] const auto destinationOwner = pin(destination, "CPU tensor copy");
     validateCpuContiguous(source, "CPU tensor copy");
     validateCpuContiguous(destination, "CPU tensor copy");
     if (source.dtype() != destination.dtype() ||
-        source.shape() != destination.shape()) {
+        source.shape() != destination.shape() || !destination.writable()) {
         throw std::invalid_argument("CPU tensor copy metadata mismatch");
     }
-    std::memmove(destination.data(), source.data(), source.bytes());
+    std::memmove(destination.mutableData(), source.data(), source.bytes());
 }
 
-void CpuTensorBackend::matmul(const Tensor& left,
-                              const Tensor& right,
-                              Tensor& output) {
+void CpuTensorBackend::matmul(TensorView left,
+                              TensorView right,
+                              TensorView output) {
+    [[maybe_unused]] const auto leftOwner = pin(left, "CPU matmul");
+    [[maybe_unused]] const auto rightOwner = pin(right, "CPU matmul");
+    [[maybe_unused]] const auto outputOwner = pin(output, "CPU matmul");
     validateCpuContiguous(left, "CPU matmul");
     validateCpuContiguous(right, "CPU matmul");
     validateCpuContiguous(output, "CPU matmul");
     if (left.dtype() != DType::FP32 || right.dtype() != DType::FP32 ||
         output.dtype() != DType::FP32 || left.shape().rank() != 2 ||
-        right.shape().rank() != 2 || output.shape().rank() != 2) {
+        right.shape().rank() != 2 || output.shape().rank() != 2 ||
+        !output.writable()) {
         throw std::invalid_argument("CPU matmul requires contiguous rank-2 FP32 tensors");
     }
     const auto& leftDims = left.shape().dimensions();
@@ -98,7 +113,7 @@ void CpuTensorBackend::matmul(const Tensor& left,
     const auto start = std::chrono::steady_clock::now();
     const auto* leftData = static_cast<const float*>(left.data());
     const auto* rightData = static_cast<const float*>(right.data());
-    auto* outputData = static_cast<float*>(output.data());
+    auto* outputData = static_cast<float*>(output.mutableData());
     for (std::size_t row = 0; row < rows; ++row) {
         for (std::size_t column = 0; column < columns; ++column) {
             float sum = 0.0F;
@@ -112,25 +127,31 @@ void CpuTensorBackend::matmul(const Tensor& left,
     if (profiler_) profiler_->recordMatmulTime(std::chrono::steady_clock::now() - start);
 }
 
-void CpuTensorBackend::add(const Tensor& left,
-                           const Tensor& right,
-                           Tensor& output) {
+void CpuTensorBackend::add(TensorView left,
+                           TensorView right,
+                           TensorView output) {
+    [[maybe_unused]] const auto leftOwner = pin(left, "CPU add");
+    [[maybe_unused]] const auto rightOwner = pin(right, "CPU add");
+    [[maybe_unused]] const auto outputOwner = pin(output, "CPU add");
     validateElementwise(left, right, output, "CPU add");
     const auto* leftData = static_cast<const float*>(left.data());
     const auto* rightData = static_cast<const float*>(right.data());
-    auto* outputData = static_cast<float*>(output.data());
+    auto* outputData = static_cast<float*>(output.mutableData());
     for (std::size_t index = 0; index < left.shape().elementCount(); ++index) {
         outputData[index] = leftData[index] + rightData[index];
     }
 }
 
-void CpuTensorBackend::mul(const Tensor& left,
-                           const Tensor& right,
-                           Tensor& output) {
+void CpuTensorBackend::mul(TensorView left,
+                           TensorView right,
+                           TensorView output) {
+    [[maybe_unused]] const auto leftOwner = pin(left, "CPU multiply");
+    [[maybe_unused]] const auto rightOwner = pin(right, "CPU multiply");
+    [[maybe_unused]] const auto outputOwner = pin(output, "CPU multiply");
     validateElementwise(left, right, output, "CPU multiply");
     const auto* leftData = static_cast<const float*>(left.data());
     const auto* rightData = static_cast<const float*>(right.data());
-    auto* outputData = static_cast<float*>(output.data());
+    auto* outputData = static_cast<float*>(output.mutableData());
     for (std::size_t index = 0; index < left.shape().elementCount(); ++index) {
         outputData[index] = leftData[index] * rightData[index];
     }

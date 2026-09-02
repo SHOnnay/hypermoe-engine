@@ -156,6 +156,26 @@ void Profiler::recordMatmulTime(std::chrono::nanoseconds duration) {
     metrics_.matmulTime += duration;
 }
 
+void Profiler::recordExpertExecutionTime(std::chrono::nanoseconds duration) {
+    std::scoped_lock lock(mutex_);
+    metrics_.expertExecutionTime += duration;
+}
+
+void Profiler::recordActivationTime(std::chrono::nanoseconds duration) {
+    std::scoped_lock lock(mutex_);
+    metrics_.activationTime += duration;
+}
+
+void Profiler::recordProjectionTime(std::chrono::nanoseconds duration) {
+    std::scoped_lock lock(mutex_);
+    metrics_.projectionTime += duration;
+}
+
+void Profiler::recordQuantizationTime(std::chrono::nanoseconds duration) {
+    std::scoped_lock lock(mutex_);
+    metrics_.quantizationTime += duration;
+}
+
 void Profiler::recordTensorAllocation(std::uint64_t count) {
     std::scoped_lock lock(mutex_);
     metrics_.tensorAllocations += count;
@@ -190,6 +210,14 @@ std::string Profiler::toJson() const {
         std::chrono::duration<double, std::milli>(metrics.kernelTime).count();
     const auto matmulMs =
         std::chrono::duration<double, std::milli>(metrics.matmulTime).count();
+    const auto expertExecutionMs =
+        std::chrono::duration<double, std::milli>(metrics.expertExecutionTime).count();
+    const auto activationMs =
+        std::chrono::duration<double, std::milli>(metrics.activationTime).count();
+    const auto projectionMs =
+        std::chrono::duration<double, std::milli>(metrics.projectionTime).count();
+    const auto quantizationMs =
+        std::chrono::duration<double, std::milli>(metrics.quantizationTime).count();
     std::ostringstream output;
     output << std::fixed << std::setprecision(6)
            << "{\n"
@@ -225,6 +253,10 @@ std::string Profiler::toJson() const {
            << metrics.transferOverlapPercentage() << ",\n"
            << "  \"kernel_time_ms\": " << kernelMs << ",\n"
            << "  \"matmul_time_ms\": " << matmulMs << ",\n"
+           << "  \"expert_execution_time_ms\": " << expertExecutionMs << ",\n"
+           << "  \"activation_time_ms\": " << activationMs << ",\n"
+           << "  \"projection_time_ms\": " << projectionMs << ",\n"
+           << "  \"quantization_time_ms\": " << quantizationMs << ",\n"
            << "  \"tensor_allocations\": " << metrics.tensorAllocations << ",\n"
            << "  \"gpu_utilization_percent\": "
            << metrics.gpuUtilizationPercent << ",\n"

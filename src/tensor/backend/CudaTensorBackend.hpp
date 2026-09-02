@@ -25,16 +25,16 @@ public:
     [[nodiscard]] Device device() const noexcept override;
     [[nodiscard]] bool available() const noexcept override;
     [[nodiscard]] Tensor allocateTensor(const Shape& shape, DType dtype) override;
-    void copyTensor(const Tensor& source, Tensor& destination) override;
-    void matmul(const Tensor& left,
-                const Tensor& right,
-                Tensor& output) override;
-    void add(const Tensor& left,
-             const Tensor& right,
-             Tensor& output) override;
-    void mul(const Tensor& left,
-             const Tensor& right,
-             Tensor& output) override;
+    void copyTensor(TensorView source, TensorView destination) override;
+    void matmul(TensorView left,
+                TensorView right,
+                TensorView output) override;
+    void add(TensorView left,
+             TensorView right,
+             TensorView output) override;
+    void mul(TensorView left,
+             TensorView right,
+             TensorView output) override;
     [[nodiscard]] Tensor reshape(const Tensor& tensor, Shape shape) override;
     void synchronize() override;
 

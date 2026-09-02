@@ -39,6 +39,10 @@ struct ProfilerSnapshot {
     std::chrono::nanoseconds hiddenTransferTime{};
     std::chrono::nanoseconds kernelTime{};
     std::chrono::nanoseconds matmulTime{};
+    std::chrono::nanoseconds expertExecutionTime{};
+    std::chrono::nanoseconds activationTime{};
+    std::chrono::nanoseconds projectionTime{};
+    std::chrono::nanoseconds quantizationTime{};
     std::uint64_t tensorAllocations{};
     double gpuUtilizationPercent{};
     double peakGpuUtilizationPercent{};
@@ -75,6 +79,10 @@ public:
                                std::chrono::nanoseconds hidden);
     void recordKernelTime(std::chrono::nanoseconds duration);
     void recordMatmulTime(std::chrono::nanoseconds duration);
+    void recordExpertExecutionTime(std::chrono::nanoseconds duration);
+    void recordActivationTime(std::chrono::nanoseconds duration);
+    void recordProjectionTime(std::chrono::nanoseconds duration);
+    void recordQuantizationTime(std::chrono::nanoseconds duration);
     void recordTensorAllocation(std::uint64_t count = 1);
     void observeGpuUtilization(double percentage);
 

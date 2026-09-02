@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(HyperMoE VERSION 0.5.0 LANGUAGES CXX)
+project(HyperMoE VERSION 0.6.0 LANGUAGES CXX)
 
 option(HYPERMOE_BUILD_TESTS "Build HyperMoE tests" ON)
 option(HYPERMOE_BUILD_BENCHMARKS "Build HyperMoE simulation benchmarks" ON)
@@ -40,6 +40,10 @@ add_library(hypermoe
     src/scheduler/Scheduler.cpp
     src/tensor/Shape.cpp
     src/tensor/Tensor.cpp
+    src/tensor/TensorView.cpp
+    src/tensor/activation/Activation.cpp
+    src/tensor/quantization/Quantization.cpp
+    src/tensor/quantization/QuantizedTensor.cpp
     src/tensor/backend/CpuTensorBackend.cpp
     src/tensor/backend/CudaTensorBackend.cpp
     src/experts/ExpertExecutor.cpp
@@ -105,6 +109,10 @@ if(HYPERMOE_BUILD_TESTS)
     add_executable(hypermoe_phase5_tests tests/phase5_tests.cpp)
     target_link_libraries(hypermoe_phase5_tests PRIVATE HyperMoE::hypermoe)
     add_test(NAME hypermoe_phase5 COMMAND hypermoe_phase5_tests)
+
+    add_executable(hypermoe_phase6_tests tests/phase6_tests.cpp)
+    target_link_libraries(hypermoe_phase6_tests PRIVATE HyperMoE::hypermoe)
+    add_test(NAME hypermoe_phase6 COMMAND hypermoe_phase6_tests)
 endif()
 
 if(HYPERMOE_BUILD_BENCHMARKS)
@@ -129,4 +137,8 @@ if(HYPERMOE_BUILD_BENCHMARKS)
     add_executable(hypermoe_tensor_benchmark
         benchmarks/tensor/tensor_benchmark.cpp)
     target_link_libraries(hypermoe_tensor_benchmark PRIVATE HyperMoE::hypermoe)
+
+    add_executable(hypermoe_expert_benchmark
+        benchmarks/expert/expert_benchmark.cpp)
+    target_link_libraries(hypermoe_expert_benchmark PRIVATE HyperMoE::hypermoe)
 endif()

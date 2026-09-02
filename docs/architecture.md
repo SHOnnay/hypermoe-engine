@@ -1,4 +1,4 @@
-# HyperMoE architecture through Phase 5
+# HyperMoE architecture through Phase 6
 
 The runtime separates durable storage, movement, residency, eviction policy,
 hardware access, and measurement so future model adapters do not own memory
@@ -26,10 +26,10 @@ experts.bin + experts.index
  CudaMemoryPool-backed DeviceBuffer
           │ stream + completion event
           ▼
- Tensor (shape + dtype + device + shared storage)
+ Tensor owner / non-owning TensorView slices
           │ TensorBackend
           ▼
- MatmulExpertExecutor (input × weights → output)
+ gate + up GEMMs → SiLU/GELU → multiply → down GEMM
 ```
 
 ## Components
@@ -80,12 +80,21 @@ experts.bin + experts.index
 - `Shape` stores dimensions and element strides with checked element-count and
   addressable-span arithmetic. `Tensor` adds dtype, device ordinal, logical byte
   count, backing byte count, pointer, and shared RAII ownership.
+- `TensorView` copies only metadata and holds a weak lifetime token. It provides
+  checked read-only/writable access and byte-offset slices over tensor,
+  `DeviceBuffer`, and resident expert storage without extending residency between
+  operations. Backends promote the weak token for the duration of each operation.
+- `QuantizedTensor` validates contiguous INT8 and packed signed-Q4 storage,
+  positive finite scale, signed zero point, device metadata, and versioned JSON
+  serialization metadata. Packed Q4 rounds odd element counts up to one byte.
 - `TensorBackend` defines allocation, copy, matmul, add, multiply, reshape, and
   synchronization. `CpuTensorBackend` is the reference implementation;
   `CudaTensorBackend` uses cuBLAS for row-major FP32 GEMM when CUDA is enabled.
-- `MatmulExpertExecutor` is the model-independent execution primitive. It performs
-  one projection and deliberately contains no router, activation, gate, or
-  transformer behavior.
+- `MatmulExpertExecutor` retains the Phase 5 single-projection API.
+  `ExpertMlpExecutor` composes gate/up/down FP32 projections, SiLU or exact GELU,
+  and gated elementwise multiplication without embedding router or transformer
+  behavior. CUDA projection uses cuBLAS; activation and multiply currently use
+  explicit host staging.
 - `CachePolicy` has interchangeable LRU, LFU, and hybrid implementations. The
   hybrid normalizes signals before applying 0.4 frequency, 0.3 recency,
   0.2 layer probability, and 0.1 prefetch confidence.
@@ -93,16 +102,20 @@ experts.bin + experts.index
   transfer-queue depth.
 - `Profiler` collects requests, transfers, evictions, pressure, CUDA/NVMe/RAM
   timing, GPU-memory use, queue depth, byte counts, stalls, prefetch outcomes,
-  average scheduler queue wait, transfer overlap, kernel/matmul time, tensor
-  allocations, and externally supplied GPU-utilization observations.
+  average scheduler queue wait, transfer overlap, kernel/matmul/expert/projection/
+  activation/quantization time, tensor allocations, and externally supplied
+  GPU-utilization observations.
 - `HardwareInfo` reports CPU, logical cores, RAM, available storage, CUDA
   build/runtime state, GPU name, VRAM, runtime version, and driver version.
 
 ## Ownership and synchronization
 
 Mapped spans never outlive their `ExpertStore`. Loads return owning vectors.
-Transfer tasks, shared futures, tensors, and cancellation flags use shared ownership until
-their promises are fulfilled. Device and pinned buffers retain the backend that
+Transfer tasks, shared futures, tensors, and cancellation flags use shared
+ownership until their promises are fulfilled. Tensor views deliberately do not;
+the scheduler must retain or pin residency through execution. Executors promote
+view tokens for the complete MLP call, and expired views fail validation instead
+of dereferencing released storage. Device and pinned buffers retain the backend that
 must free them. Scheduler queue/pending state is protected independently from the
 residency map; event callbacks run after event-bus locks are released. A transfer
 task's priority is immutable after dispatch, preventing worker/request races.
@@ -119,9 +132,10 @@ addition to tier-independent events.
 ## Deferred intentionally
 
 - Model-format parsing and Qwen/GLM/DeepSeek/Kimi adapters
-- Tensor routing, full expert MLPs, token generation, and KV cache
+- Tensor routing, token generation, and KV cache
 - Direct-storage integrations and unbuffered platform-specific NVMe benchmarks
 - Router-produced probabilities and measured compute/transfer overlap
 - Automatic scheduler-driven capacity selection and eviction policy execution
-- Batched/strided GEMM, FP16/INT8 compute, kernel launch policy, and CUDA graphs
+- Quantized dequantization/GEMM, batched/strided GEMM, FP16 compute, kernel launch
+  policy, and CUDA graphs
 - Custom CUDA kernels

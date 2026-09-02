@@ -2,6 +2,8 @@
 
 #include "memory/TransferManager.hpp"
 #include "tensor/Tensor.hpp"
+#include "tensor/TensorView.hpp"
+#include "tensor/quantization/QuantizedTensor.hpp"
 
 #include <chrono>
 #include <stdexcept>
@@ -197,6 +199,61 @@ tensor::Tensor ExpertManager::residentDeviceTensor(
                             ? tensor::Device::cuda(buffer->backend()->deviceOrdinal())
                             : tensor::Device::cpu();
     return tensor::Tensor::fromDeviceBuffer(shape, dtype, device, buffer);
+}
+
+tensor::TensorView ExpertManager::residentDeviceTensorView(
+    ExpertId id, const tensor::Shape& shape, tensor::DType dtype) const {
+    std::scoped_lock lock(mutex_);
+    const auto it = experts_.find(id);
+    if (it == experts_.end()) throw std::out_of_range("unknown expert id");
+    const auto& managed = it->second;
+    if (managed.metadata.location != MemoryTier::Vram || !managed.deviceWeights) {
+        throw std::logic_error("expert does not own a resident device buffer");
+    }
+    const auto elementBytes = tensor::sizeOf(dtype);
+    if (elementBytes == 0 ||
+        shape.storageElementCount() > managed.metadata.sizeBytes / elementBytes ||
+        shape.storageElementCount() * elementBytes != managed.metadata.sizeBytes) {
+        throw std::invalid_argument("tensor view metadata does not match expert weight bytes");
+    }
+    const auto& buffer = managed.deviceWeights;
+    const auto device = buffer->backend()->kind() == backend::BackendKind::Cuda
+                            ? tensor::Device::cuda(buffer->backend()->deviceOrdinal())
+                            : tensor::Device::cpu();
+    return tensor::TensorView::fromDeviceBuffer(shape, dtype, device, buffer, false);
+}
+
+tensor::quantization::QuantizedTensor ExpertManager::residentQuantizedTensor(
+    ExpertId id,
+    const tensor::Shape& shape,
+    tensor::quantization::QuantizedDType dtype,
+    tensor::quantization::QuantizationParameters parameters) const {
+    std::scoped_lock lock(mutex_);
+    const auto it = experts_.find(id);
+    if (it == experts_.end()) throw std::out_of_range("unknown expert id");
+    const auto& managed = it->second;
+    if (managed.metadata.location != MemoryTier::Vram || !managed.deviceWeights) {
+        throw std::logic_error("expert does not own a resident device buffer");
+    }
+    const bool quantizationMatches =
+        (dtype == tensor::quantization::QuantizedDType::INT8 &&
+         managed.metadata.quantization == QuantizationType::Int8) ||
+        (dtype == tensor::quantization::QuantizedDType::Q4 &&
+         managed.metadata.quantization == QuantizationType::Q4);
+    if (!quantizationMatches) {
+        throw std::invalid_argument("quantized tensor dtype does not match expert metadata");
+    }
+    if (tensor::quantization::storageSizeBytes(shape, dtype) !=
+        managed.metadata.sizeBytes) {
+        throw std::invalid_argument(
+            "quantized tensor metadata does not match expert weight bytes");
+    }
+    const auto& buffer = managed.deviceWeights;
+    const auto device = buffer->backend()->kind() == backend::BackendKind::Cuda
+                            ? tensor::Device::cuda(buffer->backend()->deviceOrdinal())
+                            : tensor::Device::cpu();
+    return tensor::quantization::QuantizedTensor::fromDeviceBuffer(
+        shape, dtype, parameters, device, buffer);
 }
 
 std::size_t ExpertManager::expertCount() const {

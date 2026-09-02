@@ -3,6 +3,7 @@
 #include "hypermoe/experts/cache_policy.hpp"
 #include "hypermoe/memory/memory_manager.hpp"
 
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -19,7 +20,13 @@ class DeviceBuffer;
 namespace tensor {
 class Shape;
 class Tensor;
+class TensorView;
 enum class DType;
+namespace quantization {
+class QuantizedTensor;
+enum class QuantizedDType : std::uint32_t;
+struct QuantizationParameters;
+}
 }
 
 enum class RequestSource {
@@ -67,6 +74,13 @@ public:
     residentDeviceWeights(ExpertId id) const;
     [[nodiscard]] tensor::Tensor residentDeviceTensor(
         ExpertId id, const tensor::Shape& shape, tensor::DType dtype) const;
+    [[nodiscard]] tensor::TensorView residentDeviceTensorView(
+        ExpertId id, const tensor::Shape& shape, tensor::DType dtype) const;
+    [[nodiscard]] tensor::quantization::QuantizedTensor residentQuantizedTensor(
+        ExpertId id,
+        const tensor::Shape& shape,
+        tensor::quantization::QuantizedDType dtype,
+        tensor::quantization::QuantizationParameters parameters) const;
     [[nodiscard]] std::size_t expertCount() const;
     [[nodiscard]] ExpertManagerStats stats() const;
 

@@ -1,4 +1,4 @@
-# Design decisions through Phase 5
+# Design decisions through Phase 6
 
 ## Why memory mapping
 
@@ -207,10 +207,47 @@ bias/activation/gating, dequantization, or layouts that measurement shows cuBLAS
 cannot handle efficiently. CUDA elementwise add/multiply currently use an explicit
 host-staged reference path rather than pretending that this fallback is optimized.
 
-## Expert execution scope
+## Why tensor ownership and use are separate
 
-`MatmulExpertExecutor` performs exactly `output = input × expert_weights`. The
-resident-tensor bridge verifies that shape and dtype consume the complete expert
-buffer before sharing it. No assumption is made about expert MLP structure,
-activation functions, gate weights, routing, quantization layout, or any specific
-model family. Those contracts belong to later inspected model adapters.
+An owning `Tensor` is appropriate for activations and temporary results, but it is
+the wrong default descriptor for cache-managed expert weights: copying shared
+ownership into every operation would silently extend residency and prevent the
+pressure controller from reclaiming cold experts. `TensorView` therefore copies
+only shape/dtype/device metadata and keeps a weak lifetime token. It can expose a
+whole `DeviceBuffer` or checked byte slices without a weight allocation or copy.
+Backends temporarily promote that token while an operation is active; the MLP
+executor pins all participating views across its complete operation sequence.
+
+This makes the lifetime contract explicit. Scheduling must keep an expert in
+`IN_USE` while views execute. If the owner disappears first, the view becomes
+invalid and backend validation rejects it. The weak token does not make an
+unsynchronized concurrent eviction safe by itself; scheduler pinning is the
+required synchronization boundary.
+
+## Expert execution architecture
+
+The generic executor implements the gated MLP used by many sparse experts:
+`down(activation(input × gate) * (input × up))`. Gate and up projections share
+input/model dimensions, while down maps the intermediate width to output width.
+All contracts are validated before allocating intermediate activations.
+
+SiLU and exact-erf GELU are CPU reference functions. The same activation dispatch
+accepts a CUDA tensor backend, but currently stages through CPU memory. Projection
+GEMMs continue to use cuBLAS on CUDA. This provides end-to-end correctness and a
+stable activation seam without introducing an unprofiled kernel. The benchmark
+reports loading, view preparation, projection, activation, and total execution so
+the host-staging cost will be visible on NVIDIA hardware.
+
+## Quantization roadmap
+
+`QuantizedTensor` separates packed dtype from ordinary `Tensor::DType`. INT8 uses
+one byte per value; signed Q4 packs two values per byte. Both require contiguous
+storage and carry a positive finite scale plus an in-range signed zero point.
+Versioned serialization metadata records shape, device, parameters, and packed
+byte size, while `ExpertManager` checks the descriptor against storage metadata.
+
+Phase 6 deliberately does not guess a block/group quantization layout or execute
+quantized GEMM. Real model metadata must define group size, scale tensor layout,
+packing order, and any per-channel rules before dequantization or fused kernels
+are added. INT8/Q4 execution, FP16 accumulation, and fused gated kernels remain
+future profiling-driven work.

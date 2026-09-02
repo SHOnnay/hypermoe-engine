@@ -1,10 +1,10 @@
 # HyperMoE Engine
 
 HyperMoE is a C++20 inference-runtime project for hierarchical Mixture-of-Experts
-memory management across VRAM, pinned RAM, ordinary RAM, and NVMe. Phase 5 adds a
-model-independent tensor and expert-compute foundation above the CPU/optional
-CUDA runtime: validated shape/stride metadata, shared RAII storage, backend
-switching, reference CPU operations, and cuBLAS FP32 GEMM when available.
+memory management across VRAM, pinned RAM, ordinary RAM, and NVMe. Phase 6 adds a
+model-independent gated expert MLP above the CPU/optional CUDA tensor runtime,
+with non-owning tensor views, checked INT8/Q4 descriptors, SiLU/GELU activation,
+zero-copy resident-weight slicing, and execution-level profiling.
 There is intentionally no transformer inference, model adapter, or custom CUDA
 kernel implementation yet.
 
@@ -22,6 +22,7 @@ ctest --test-dir build --output-on-failure
   --report=pipeline_report.json
 ./build/hypermoe_cuda_benchmark --report=cuda_report.json
 ./build/hypermoe_tensor_benchmark --report=tensor_report.json
+./build/hypermoe_expert_benchmark --report=expert_report.json
 ```
 
 Enable runtime memory checks with:
@@ -125,7 +126,7 @@ valid JSON report with zero GPU measurements and an explicit skip reason.
 
 ## Tensor and expert execution foundation
 
-`Tensor` is a lightweight view over shared RAII storage. It records shape,
+`Tensor` owns shared RAII storage and its metadata. It records shape,
 element strides, `FP32`/`FP16`/`INT8` dtype, CPU/CUDA device and ordinal, logical
 bytes, and backing-storage bytes. Shape and byte multiplication are checked for
 overflow; strided tensors validate their full addressable span. Reshape shares
@@ -137,12 +138,27 @@ portable correctness implementation. `CudaTensorBackend` uses cuBLAS SGEMM for
 contiguous rank-2 FP32 matrices and handles CPU↔CUDA and CUDA↔CUDA copies. CUDA and
 cuBLAS remain optional CMake capabilities.
 
-`MatmulExpertExecutor` implements only `output = input × expert_weights`.
-`ExpertManager::residentDeviceTensor` safely wraps an expert's transferred backend
-buffer after validating the requested tensor metadata against its stored byte
-size. Activation functions, gates, routing, tensor formats, and transformer
-semantics remain intentionally absent.
+`TensorView` is a non-owning, lifetime-checked execution descriptor. It supports
+read-only expert weights, writable outputs, checked reshape, and byte-offset
+slices. `ExpertManager::residentDeviceTensorView` maps a transferred expert blob
+directly onto its `DeviceBuffer`; the view does not increment ownership or copy
+weight bytes. Scheduler residency must keep that buffer alive while it is in use.
+
+`QuantizedTensor` owns or aliases checked packed storage and records shape,
+device, positive scale, signed zero point, and `INT8` or packed signed `Q4` dtype.
+Its versioned JSON metadata exposes the packed storage size. This phase does not
+yet dequantize or execute quantized GEMM.
+
+`ExpertMlpExecutor` performs the common gated primitive
+`down(activation(input × gate) * (input × up))`. CPU SiLU and exact GELU are the
+reference implementations. CUDA uses existing cuBLAS GEMM and an explicit
+host-staged activation/elementwise fallback until profiling supports custom fused
+kernels. No routing, transformer block, or model-format assumption is included.
 
 The tensor benchmark reports CPU/CUDA FP32 GEMM, tensor allocation, copy, and
 synchronization measurements. CUDA fields remain zero with an explicit skip
 reason when cuBLAS or an NVIDIA device is unavailable.
+
+The expert benchmark measures real expert-store loading, zero-copy tensor-view
+preparation, projection GEMMs, activation, and total MLP execution. CPU and CUDA
+results are reported separately, with an explicit CUDA skip reason when needed.

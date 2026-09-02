@@ -1,6 +1,7 @@
 #pragma once
 
 #include "tensor/Tensor.hpp"
+#include "tensor/TensorView.hpp"
 
 #include <string_view>
 
@@ -14,16 +15,16 @@ public:
     [[nodiscard]] virtual Device device() const noexcept = 0;
     [[nodiscard]] virtual bool available() const noexcept = 0;
     [[nodiscard]] virtual Tensor allocateTensor(const Shape& shape, DType dtype) = 0;
-    virtual void copyTensor(const Tensor& source, Tensor& destination) = 0;
-    virtual void matmul(const Tensor& left,
-                        const Tensor& right,
-                        Tensor& output) = 0;
-    virtual void add(const Tensor& left,
-                     const Tensor& right,
-                     Tensor& output) = 0;
-    virtual void mul(const Tensor& left,
-                     const Tensor& right,
-                     Tensor& output) = 0;
+    virtual void copyTensor(TensorView source, TensorView destination) = 0;
+    virtual void matmul(TensorView left,
+                        TensorView right,
+                        TensorView output) = 0;
+    virtual void add(TensorView left,
+                     TensorView right,
+                     TensorView output) = 0;
+    virtual void mul(TensorView left,
+                     TensorView right,
+                     TensorView output) = 0;
     [[nodiscard]] virtual Tensor reshape(const Tensor& tensor, Shape shape) = 0;
     virtual void synchronize() = 0;
 };

@@ -1,5 +1,7 @@
 #include "tensor/Tensor.hpp"
 
+#include "tensor/TensorView.hpp"
+
 #include <limits>
 #include <stdexcept>
 #include <utility>
@@ -80,6 +82,10 @@ Tensor Tensor::reshape(Shape shape) const {
     }
     return {std::move(shape), dtype_, device_, data_, storageBytes_, owner_};
 }
+
+TensorView Tensor::view() & { return TensorView(*this); }
+
+TensorView Tensor::view() const & { return TensorView(*this); }
 
 std::size_t Tensor::requiredBytes(const Shape& shape, DType dtype) {
     const auto elementBytes = sizeOf(dtype);

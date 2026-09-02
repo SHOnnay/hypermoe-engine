@@ -57,12 +57,13 @@ std::size_t tensorStorageBytes(const Shape& shape, DType dtype) {
     return shape.storageElementCount() * elementBytes;
 }
 
-void validateCopy(const Tensor& source, const Tensor& destination, int ordinal) {
+void validateCopy(TensorView source, TensorView destination, int ordinal) {
     if (!source || !destination || !source.isContiguous() ||
         !destination.isContiguous()) {
         throw std::invalid_argument("CUDA tensor copy requires contiguous tensors");
     }
-    if (source.dtype() != destination.dtype() || source.shape() != destination.shape()) {
+    if (source.dtype() != destination.dtype() || source.shape() != destination.shape() ||
+        !destination.writable()) {
         throw std::invalid_argument("CUDA tensor copy metadata mismatch");
     }
     if ((source.device().type == DeviceType::CUDA &&
@@ -73,9 +74,18 @@ void validateCopy(const Tensor& source, const Tensor& destination, int ordinal) 
     }
 }
 
-void validateCudaElementwise(const Tensor& left,
-                             const Tensor& right,
-                             const Tensor& output,
+std::shared_ptr<void> pin(TensorView tensor, const char* operation) {
+    auto owner = tensor.lockOwner();
+    if (!owner) {
+        throw std::invalid_argument(std::string(operation) +
+                                    " received expired tensor storage");
+    }
+    return owner;
+}
+
+void validateCudaElementwise(TensorView left,
+                             TensorView right,
+                             TensorView output,
                              int ordinal,
                              const char* operation) {
     if (!left || !right || !output || left.device() != Device::cuda(ordinal) ||
@@ -84,7 +94,7 @@ void validateCudaElementwise(const Tensor& left,
         !right.isContiguous() || !output.isContiguous() ||
         left.dtype() != DType::FP32 || right.dtype() != DType::FP32 ||
         output.dtype() != DType::FP32 || left.shape() != right.shape() ||
-        left.shape() != output.shape()) {
+        left.shape() != output.shape() || !output.writable()) {
         throw std::invalid_argument(std::string(operation) +
                                     " requires equal contiguous CUDA FP32 tensors");
     }
@@ -157,12 +167,14 @@ Tensor CudaTensorBackend::allocateTensor(const Shape& shape, DType dtype) {
     return tensor;
 }
 
-void CudaTensorBackend::copyTensor(const Tensor& source, Tensor& destination) {
+void CudaTensorBackend::copyTensor(TensorView source, TensorView destination) {
     if (!available()) throw std::runtime_error("CUDA tensor backend is unavailable");
+    [[maybe_unused]] const auto sourceOwner = pin(source, "CUDA tensor copy");
+    [[maybe_unused]] const auto destinationOwner = pin(destination, "CUDA tensor copy");
     validateCopy(source, destination, impl_->ordinal);
     if (source.device().type == DeviceType::CPU &&
         destination.device().type == DeviceType::CPU) {
-        std::memmove(destination.data(), source.data(), source.bytes());
+        std::memmove(destination.mutableData(), source.data(), source.bytes());
         return;
     }
 
@@ -171,15 +183,15 @@ void CudaTensorBackend::copyTensor(const Tensor& source, Tensor& destination) {
     auto completion = impl_->backend->createEvent();
     try {
         if (source.device().type == DeviceType::CPU) {
-            impl_->backend->copyToDevice(destination.data(), source.data(),
+            impl_->backend->copyToDevice(destination.mutableData(), source.data(),
                                          source.bytes(), stream);
         } else if (destination.device().type == DeviceType::CPU) {
-            impl_->backend->copyFromDevice(destination.data(), source.data(),
+            impl_->backend->copyFromDevice(destination.mutableData(), source.data(),
                                            source.bytes(), stream);
         } else {
 #ifdef HYPERMOE_HAS_CUBLAS
             checkCuda(cudaSetDevice(impl_->ordinal), "cudaSetDevice");
-            checkCuda(cudaMemcpyAsync(destination.data(), source.data(), source.bytes(),
+            checkCuda(cudaMemcpyAsync(destination.mutableData(), source.data(), source.bytes(),
                                       cudaMemcpyDeviceToDevice, stream),
                       "cudaMemcpyAsync(device-to-device)");
 #else
@@ -196,16 +208,20 @@ void CudaTensorBackend::copyTensor(const Tensor& source, Tensor& destination) {
     }
 }
 
-void CudaTensorBackend::matmul(const Tensor& left,
-                               const Tensor& right,
-                               Tensor& output) {
+void CudaTensorBackend::matmul(TensorView left,
+                               TensorView right,
+                               TensorView output) {
     if (!available()) throw std::runtime_error("CUDA tensor backend is unavailable");
+    [[maybe_unused]] const auto leftOwner = pin(left, "CUDA matmul");
+    [[maybe_unused]] const auto rightOwner = pin(right, "CUDA matmul");
+    [[maybe_unused]] const auto outputOwner = pin(output, "CUDA matmul");
     if (!left || !right || !output || left.device() != device() ||
         right.device() != device() || output.device() != device() ||
         !left.isContiguous() || !right.isContiguous() || !output.isContiguous() ||
         left.dtype() != DType::FP32 || right.dtype() != DType::FP32 ||
         output.dtype() != DType::FP32 || left.shape().rank() != 2 ||
-        right.shape().rank() != 2 || output.shape().rank() != 2) {
+        right.shape().rank() != 2 || output.shape().rank() != 2 ||
+        !output.writable()) {
         throw std::invalid_argument(
             "CUDA matmul requires contiguous rank-2 CUDA FP32 tensors");
     }
@@ -242,7 +258,7 @@ void CudaTensorBackend::matmul(const Tensor& left,
                         impl_->handle, CUBLAS_OP_N, CUBLAS_OP_N, columns, rows,
                         inner, &alpha, static_cast<const float*>(right.data()),
                         columns, static_cast<const float*>(left.data()), inner,
-                        &beta, static_cast<float*>(output.data()), columns),
+                        &beta, static_cast<float*>(output.mutableData()), columns),
                     "cublasSgemm");
         impl_->runtime->recordEvent(eventEnd, stream);
         impl_->runtime->synchronizeEvent(eventEnd);
@@ -269,10 +285,13 @@ void CudaTensorBackend::matmul(const Tensor& left,
 #endif
 }
 
-void CudaTensorBackend::add(const Tensor& left,
-                            const Tensor& right,
-                            Tensor& output) {
+void CudaTensorBackend::add(TensorView left,
+                            TensorView right,
+                            TensorView output) {
     if (!available()) throw std::runtime_error("CUDA tensor backend is unavailable");
+    [[maybe_unused]] const auto leftOwner = pin(left, "CUDA add");
+    [[maybe_unused]] const auto rightOwner = pin(right, "CUDA add");
+    [[maybe_unused]] const auto outputOwner = pin(output, "CUDA add");
     validateCudaElementwise(left, right, output, impl_->ordinal, "CUDA add");
     CpuTensorBackend cpu(impl_->profiler);
     auto hostLeft = cpu.allocateTensor(left.shape(), left.dtype());
@@ -284,10 +303,13 @@ void CudaTensorBackend::add(const Tensor& left,
     copyTensor(hostOutput, output);
 }
 
-void CudaTensorBackend::mul(const Tensor& left,
-                            const Tensor& right,
-                            Tensor& output) {
+void CudaTensorBackend::mul(TensorView left,
+                            TensorView right,
+                            TensorView output) {
     if (!available()) throw std::runtime_error("CUDA tensor backend is unavailable");
+    [[maybe_unused]] const auto leftOwner = pin(left, "CUDA multiply");
+    [[maybe_unused]] const auto rightOwner = pin(right, "CUDA multiply");
+    [[maybe_unused]] const auto outputOwner = pin(output, "CUDA multiply");
     validateCudaElementwise(left, right, output, impl_->ordinal, "CUDA multiply");
     CpuTensorBackend cpu(impl_->profiler);
     auto hostLeft = cpu.allocateTensor(left.shape(), left.dtype());

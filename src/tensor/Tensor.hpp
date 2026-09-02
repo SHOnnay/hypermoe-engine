@@ -10,6 +10,8 @@
 
 namespace hypermoe::tensor {
 
+class TensorView;
+
 enum class DeviceType {
     CPU,
     CUDA,
@@ -61,8 +63,13 @@ public:
     [[nodiscard]] bool valid() const noexcept;
     [[nodiscard]] explicit operator bool() const noexcept;
     [[nodiscard]] Tensor reshape(Shape shape) const;
+    [[nodiscard]] TensorView view() &;
+    [[nodiscard]] TensorView view() const &;
+    TensorView view() && = delete;
 
 private:
+    friend class TensorView;
+
     Tensor(Shape shape,
            DType dtype,
            Device device,
