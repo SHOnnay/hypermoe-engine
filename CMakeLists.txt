@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(HyperMoE VERSION 0.3.0 LANGUAGES CXX)
+project(HyperMoE VERSION 0.3.5 LANGUAGES CXX)
 
 option(HYPERMOE_BUILD_TESTS "Build HyperMoE tests" ON)
 option(HYPERMOE_BUILD_BENCHMARKS "Build HyperMoE simulation benchmarks" ON)
@@ -31,6 +31,10 @@ add_library(hypermoe
     src/backend/cuda/CudaMemoryManager.cpp
     src/memory/PinnedBuffer.cpp
     src/hardware/HardwareInfo.cpp
+    src/scheduler/ExpertState.cpp
+    src/scheduler/RuntimeEvent.cpp
+    src/scheduler/Prefetcher.cpp
+    src/scheduler/Scheduler.cpp
 )
 add_library(HyperMoE::hypermoe ALIAS hypermoe)
 
@@ -79,6 +83,10 @@ if(HYPERMOE_BUILD_TESTS)
     add_executable(hypermoe_phase3_tests tests/phase3_tests.cpp)
     target_link_libraries(hypermoe_phase3_tests PRIVATE HyperMoE::hypermoe)
     add_test(NAME hypermoe_phase3 COMMAND hypermoe_phase3_tests)
+
+    add_executable(hypermoe_scheduler_tests tests/scheduler_tests.cpp)
+    target_link_libraries(hypermoe_scheduler_tests PRIVATE HyperMoE::hypermoe)
+    add_test(NAME hypermoe_scheduler COMMAND hypermoe_scheduler_tests)
 endif()
 
 if(HYPERMOE_BUILD_BENCHMARKS)
@@ -91,4 +99,8 @@ if(HYPERMOE_BUILD_BENCHMARKS)
     add_executable(hypermoe_hardware_benchmark
         benchmarks/hardware/hardware_benchmark.cpp)
     target_link_libraries(hypermoe_hardware_benchmark PRIVATE HyperMoE::hypermoe)
+
+    add_executable(hypermoe_pipeline_benchmark
+        benchmarks/pipeline/pipeline_benchmark.cpp)
+    target_link_libraries(hypermoe_pipeline_benchmark PRIVATE HyperMoE::hypermoe)
 endif()

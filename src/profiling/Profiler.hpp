@@ -30,9 +30,18 @@ struct ProfilerSnapshot {
     std::uint64_t peakGpuMemoryUsageBytes{};
     std::uint64_t transferQueueDepth{};
     std::uint64_t peakTransferQueueDepth{};
+    std::uint64_t prefetchRequests{};
+    std::uint64_t prefetchHits{};
+    std::uint64_t prefetchMisses{};
+    std::uint64_t queueWaitSamples{};
+    std::chrono::nanoseconds totalQueueWait{};
+    std::chrono::nanoseconds overlapEligibleTransferTime{};
+    std::chrono::nanoseconds hiddenTransferTime{};
     double modeledLatencyMs{};
 
     [[nodiscard]] double cacheHitRate() const noexcept;
+    [[nodiscard]] double averageQueueWaitMs() const noexcept;
+    [[nodiscard]] double transferOverlapPercentage() const noexcept;
 };
 
 class Profiler {
@@ -53,6 +62,12 @@ public:
     void recordRamCopyTime(std::chrono::nanoseconds duration);
     void observeGpuMemory(std::uint64_t usedBytes);
     void observeTransferQueueDepth(std::uint64_t depth);
+    void recordPrefetchRequest(std::uint64_t count = 1);
+    void recordPrefetchHit(std::uint64_t count = 1);
+    void recordPrefetchMiss(std::uint64_t count = 1);
+    void recordQueueWait(std::chrono::nanoseconds duration);
+    void recordTransferOverlap(std::chrono::nanoseconds eligible,
+                               std::chrono::nanoseconds hidden);
 
     [[nodiscard]] ProfilerSnapshot snapshot() const;
     [[nodiscard]] std::string toJson() const;

@@ -14,6 +14,19 @@ double ProfilerSnapshot::cacheHitRate() const noexcept {
                : static_cast<double>(cacheHits) / static_cast<double>(expertRequests);
 }
 
+double ProfilerSnapshot::averageQueueWaitMs() const noexcept {
+    return queueWaitSamples == 0
+               ? 0.0
+               : std::chrono::duration<double, std::milli>(totalQueueWait).count() /
+                     static_cast<double>(queueWaitSamples);
+}
+
+double ProfilerSnapshot::transferOverlapPercentage() const noexcept {
+    if (overlapEligibleTransferTime.count() <= 0) return 0.0;
+    return 100.0 * static_cast<double>(hiddenTransferTime.count()) /
+           static_cast<double>(overlapEligibleTransferTime.count());
+}
+
 void Profiler::recordToken(std::uint64_t count) {
     std::scoped_lock lock(mutex_);
     metrics_.tokensProcessed += count;
@@ -105,6 +118,34 @@ void Profiler::observeTransferQueueDepth(std::uint64_t depth) {
         std::max(metrics_.peakTransferQueueDepth, depth);
 }
 
+void Profiler::recordPrefetchRequest(std::uint64_t count) {
+    std::scoped_lock lock(mutex_);
+    metrics_.prefetchRequests += count;
+}
+
+void Profiler::recordPrefetchHit(std::uint64_t count) {
+    std::scoped_lock lock(mutex_);
+    metrics_.prefetchHits += count;
+}
+
+void Profiler::recordPrefetchMiss(std::uint64_t count) {
+    std::scoped_lock lock(mutex_);
+    metrics_.prefetchMisses += count;
+}
+
+void Profiler::recordQueueWait(std::chrono::nanoseconds duration) {
+    std::scoped_lock lock(mutex_);
+    metrics_.totalQueueWait += duration;
+    ++metrics_.queueWaitSamples;
+}
+
+void Profiler::recordTransferOverlap(std::chrono::nanoseconds eligible,
+                                     std::chrono::nanoseconds hidden) {
+    std::scoped_lock lock(mutex_);
+    metrics_.overlapEligibleTransferTime += eligible;
+    metrics_.hiddenTransferTime += std::min(eligible, hidden);
+}
+
 ProfilerSnapshot Profiler::snapshot() const {
     std::scoped_lock lock(mutex_);
     return metrics_;
@@ -149,6 +190,12 @@ std::string Profiler::toJson() const {
            << "  \"transfer_queue_depth\": " << metrics.transferQueueDepth << ",\n"
            << "  \"peak_transfer_queue_depth\": "
            << metrics.peakTransferQueueDepth << ",\n"
+           << "  \"prefetch_requests\": " << metrics.prefetchRequests << ",\n"
+           << "  \"prefetch_hits\": " << metrics.prefetchHits << ",\n"
+           << "  \"prefetch_misses\": " << metrics.prefetchMisses << ",\n"
+           << "  \"average_queue_wait_ms\": " << metrics.averageQueueWaitMs() << ",\n"
+           << "  \"transfer_overlap_percentage\": "
+           << metrics.transferOverlapPercentage() << ",\n"
            << "  \"modeled_latency_ms\": " << metrics.modeledLatencyMs << "\n"
            << "}\n";
     return output.str();

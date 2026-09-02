@@ -1,4 +1,4 @@
-# Design decisions through Phase 3
+# Design decisions through Phase 3.5
 
 ## Why memory mapping
 
@@ -71,11 +71,11 @@ the `DeviceBuffer` through the future. CUDA timing events accumulate copy durati
 when the stream is synchronized. Device and pinned buffers retain shared backend
 ownership, so the backend cannot disappear before cleanup.
 
-The current worker waits for its event before accepting another operation.
-Multiple workers can overlap independent streams, but full inference/prefetch
-overlap remains a later phase. Eviction will not free an allocation until all
-consumers release its shared buffer. Custom kernels remain deferred until profiling
-proves they are needed.
+The current transfer worker waits for its event before accepting another
+operation. Multiple workers can overlap independent streams, while the scheduler
+can place predicted work ahead of maintenance and behind demand. Eviction will not
+free an allocation until all consumers release its shared buffer. Custom kernels
+remain deferred until profiling proves they are needed.
 
 No direct-storage bandwidth assumptions are embedded. NVMe queue depth, range
 size, mmap fault cost, pinned-memory behavior, and PCIe throughput must be measured
@@ -88,3 +88,55 @@ and CUDA H2D/D2H copies are reported independently. Filesystem results may inclu
 the OS page cache and are named `buffered` in JSON. They are regression signals,
 not claims about raw SSD bandwidth. CUDA values remain zero with
 `gpu_benchmarked: false` when no runtime device is available.
+
+## Why asynchronous expert scheduling is required
+
+Sparse inference reduces arithmetic but makes weight arrival part of the critical
+path. A synchronous caller pays NVMe, host staging, and PCIe latency before every
+cold expert execution. A scheduler can start likely next-layer movements while
+the current expert computes, then expose a future only when the destination data
+is safe to consume. The useful optimization target is therefore hidden transfer
+time and reduced stalls, not nominal SSD bandwidth.
+
+The scheduler is separate from `TransferManager`: transfers know how bytes move,
+whereas scheduling knows why an expert is needed, whether another consumer already
+requested it, and which request may delay inference. Duplicate expert/target
+requests share a future. A queued prefetch is upgraded when demand arrives; a
+transfer already in progress is not mutated because backend priority changes
+cannot reliably preempt issued I/O.
+
+## Why an explicit residency state machine
+
+Tier location alone cannot distinguish data that is usable from data whose copy
+is queued or incomplete. The lifecycle makes availability auditable and rejects
+unsafe transitions. `current_location` remains the last valid tier while
+`target_location` describes in-flight movement. `IN_USE` blocks eviction at the
+state boundary, and `FAILED` provides a recoverable state for cancellation,
+checksum errors, allocation errors, or backend failures.
+
+## Priority, events, and prediction
+
+Priority order is active inference, predicted next layer, cache warming, and
+background maintenance. FIFO sequence numbers retain deterministic ordering
+within a class. This prevents speculative work from extending a demand stall while
+still allowing idle bandwidth to warm the hierarchy.
+
+Runtime events keep cache bookkeeping, metrics, and future API consumers out of
+the scheduler's transfer logic. Callbacks execute without holding event-bus locks;
+observer exceptions are isolated. Futures remain the authoritative completion and
+error channel.
+
+Prefetch prediction is an interface rather than embedded router logic. The
+baseline locality predictor scores recent experts and caller-provided next-layer
+patterns. It is useful for testing scheduling mechanics, but its confidence is not
+a claim about Qwen, GLM, DeepSeek, or Kimi routing. Real adapters remain deferred
+until their metadata and router behavior are inspected.
+
+## Pipeline benchmark interpretation
+
+The synchronous/async benchmark is a deterministic discrete-event simulation. It
+uses explicit modeled compute, NVMe, and RAM times so scheduling changes can be
+regression-tested without sleeps or a GPU. Reported latency, stalls, and hidden
+transfer percentage are comparative model outputs—not measured tokens/second,
+PCIe throughput, or SSD performance. Hardware defaults must be derived from the
+separate hardware benchmark on the target RTX 4070 system.
