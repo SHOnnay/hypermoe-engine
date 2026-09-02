@@ -1,0 +1,16 @@
+build/
+build-*/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+hardware_report.json
+phase2_benchmark.json
+model/experts.bin
+model/experts.index
+model/metadata.json
