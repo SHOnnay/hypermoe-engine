@@ -17,6 +17,23 @@ DeviceBuffer::DeviceBuffer(std::shared_ptr<ComputeBackend> backend,
     data_ = backend_->allocate(sizeBytes);
 }
 
+DeviceBuffer::DeviceBuffer(std::shared_ptr<ComputeBackend> backend,
+                           void* data,
+                           std::size_t sizeBytes,
+                           std::function<void(void*)> releaser)
+    : backend_(std::move(backend)),
+      data_(data),
+      size_(sizeBytes),
+      releaser_(std::move(releaser)) {
+    if (!backend_ || data_ == nullptr || size_ == 0 || !releaser_) {
+        if (data_ != nullptr) {
+            if (releaser_) releaser_(data_);
+            else if (backend_) backend_->free(data_);
+        }
+        throw std::invalid_argument("adopted DeviceBuffer ownership is incomplete");
+    }
+}
+
 DeviceBuffer::~DeviceBuffer() {
     reset();
 }
@@ -24,7 +41,8 @@ DeviceBuffer::~DeviceBuffer() {
 DeviceBuffer::DeviceBuffer(DeviceBuffer&& other) noexcept
     : backend_(std::move(other.backend_)),
       data_(std::exchange(other.data_, nullptr)),
-      size_(std::exchange(other.size_, 0)) {}
+      size_(std::exchange(other.size_, 0)),
+      releaser_(std::move(other.releaser_)) {}
 
 DeviceBuffer& DeviceBuffer::operator=(DeviceBuffer&& other) noexcept {
     if (this != &other) {
@@ -32,17 +50,20 @@ DeviceBuffer& DeviceBuffer::operator=(DeviceBuffer&& other) noexcept {
         backend_ = std::move(other.backend_);
         data_ = std::exchange(other.data_, nullptr);
         size_ = std::exchange(other.size_, 0);
+        releaser_ = std::move(other.releaser_);
     }
     return *this;
 }
 
 void DeviceBuffer::reset() noexcept {
     if (data_ != nullptr && backend_) {
-        backend_->free(data_);
+        if (releaser_) releaser_(data_);
+        else backend_->free(data_);
     }
     data_ = nullptr;
     size_ = 0;
     backend_.reset();
+    releaser_ = {};
 }
 
 void* DeviceBuffer::data() noexcept { return data_; }

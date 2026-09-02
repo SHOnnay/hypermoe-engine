@@ -257,6 +257,13 @@ void Scheduler::workerLoop() {
             states_.markLoading(task->request.layerId, task->request.expertId);
         }
         publish(RuntimeEventType::TransferStarted, task->request);
+        const bool cudaTransferExpected =
+            transfers_->backendKind() == backend::BackendKind::Cuda &&
+            (task->request.source == MemoryTier::Vram ||
+             task->request.destination == MemoryTier::Vram);
+        if (cudaTransferExpected) {
+            publish(RuntimeEventType::CudaTransferStarted, task->request);
+        }
         try {
             TransferRequest transfer;
             transfer.layerId = task->request.layerId;
@@ -291,6 +298,10 @@ void Scheduler::workerLoop() {
             }
             publish(RuntimeEventType::TransferCompleted, task->request,
                     transferred.elapsed);
+            if (transferred.cudaTransfer) {
+                publish(RuntimeEventType::CudaTransferCompleted, task->request,
+                        transferred.backendTransferTime);
+            }
             if (task->request.eviction) {
                 publish(RuntimeEventType::CacheEvicted, task->request,
                         transferred.elapsed);

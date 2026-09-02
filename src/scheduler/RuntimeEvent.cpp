@@ -13,6 +13,10 @@ std::string_view toString(RuntimeEventType type) noexcept {
     case RuntimeEventType::ExpertReady: return "EXPERT_READY";
     case RuntimeEventType::CacheEvicted: return "CACHE_EVICTED";
     case RuntimeEventType::TransferFailed: return "TRANSFER_FAILED";
+    case RuntimeEventType::CudaTransferStarted: return "CUDA_TRANSFER_STARTED";
+    case RuntimeEventType::CudaTransferCompleted: return "CUDA_TRANSFER_COMPLETED";
+    case RuntimeEventType::CudaKernelStarted: return "CUDA_KERNEL_STARTED";
+    case RuntimeEventType::CudaKernelCompleted: return "CUDA_KERNEL_COMPLETED";
     }
     return "UNKNOWN";
 }

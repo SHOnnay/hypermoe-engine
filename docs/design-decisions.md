@@ -1,4 +1,4 @@
-# Design decisions through Phase 3.5
+# Design decisions through Phase 4
 
 ## Why memory mapping
 
@@ -140,3 +140,48 @@ regression-tested without sleeps or a GPU. Reported latency, stalls, and hidden
 transfer percentage are comparative model outputs—not measured tokens/second,
 PCIe throughput, or SSD performance. Hardware defaults must be derived from the
 separate hardware benchmark on the target RTX 4070 system.
+
+## CUDA runtime ownership
+
+CUDA handles do not appear in public headers; `StreamHandle` and `EventHandle`
+remain opaque. `CudaRuntime` is the single RAII owner for handles it creates and
+sets the selected device on every calling thread before device-specific work.
+This matters because transfer workers are not the thread that initialized the
+backend. Discovery returns an unavailable `DeviceInfo` rather than throwing, so
+CPU-only executables and benchmark reporting remain straightforward. Constructing
+an actual `CudaBackend` still fails clearly when no device is usable.
+
+## Why a device memory pool
+
+Expert churn would otherwise put `cudaMalloc` and `cudaFree` on the routing hot
+path. The pool retains released blocks and performs best-fit reuse after rounding
+to 256-byte capacities. Logical size remains separate from capacity, preventing a
+consumer from treating padding as tensor data. The default cache bound is
+configurable and cached blocks can be trimmed under future memory pressure.
+
+Pool statistics distinguish reserved bytes (active plus cached), active bytes,
+free cached bytes, peak active use, physical allocation count, and reuse count.
+An internal shared control state is captured by both `CudaBuffer` and adopted
+`DeviceBuffer` releasers. If the facade shuts down while a buffer is active, the
+cache stops accepting returns and that buffer frees directly when released.
+
+## Stream roles and copy completion
+
+Demand transfers and speculative prefetches use separate persistent nonblocking
+streams; a third stream is reserved for future expert computation. This creates
+the synchronization boundary needed to overlap future kernels with weight copies
+without implying that the current phase launches kernels. Transfer completion is
+event-based, and futures are published only after the event is synchronized.
+
+Wall-clock duration and effective bandwidth are reported per transfer. CUDA event
+timings remain accumulated by the backend for device-copy profiling. The CUDA
+benchmark compares pinned/pageable transfers and serial/multiple-stream copies,
+but actual overlap depends on the GPU copy engines, PCIe topology, driver, buffer
+size, and system load.
+
+## Future tensor execution
+
+Future tensor code will consume pool-backed buffers on the compute stream, wait on
+transfer events, and publish `CUDA_KERNEL_STARTED`/`CUDA_KERNEL_COMPLETED` around
+backend or library launches. No tensor shape assumptions, model formats, CUDA
+kernels, cuBLAS calls, or transformer operations are introduced in Phase 4.

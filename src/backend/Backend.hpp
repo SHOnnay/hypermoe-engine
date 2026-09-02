@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string_view>
 
@@ -70,6 +71,10 @@ class DeviceBuffer {
 public:
     DeviceBuffer() = default;
     DeviceBuffer(std::shared_ptr<ComputeBackend> backend, std::size_t sizeBytes);
+    DeviceBuffer(std::shared_ptr<ComputeBackend> backend,
+                 void* data,
+                 std::size_t sizeBytes,
+                 std::function<void(void*)> releaser);
     ~DeviceBuffer();
 
     DeviceBuffer(const DeviceBuffer&) = delete;
@@ -88,6 +93,7 @@ private:
     std::shared_ptr<ComputeBackend> backend_;
     void* data_{};
     std::size_t size_{};
+    std::function<void(void*)> releaser_;
 };
 
 } // namespace hypermoe::backend

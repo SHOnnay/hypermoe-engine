@@ -1,10 +1,10 @@
 # HyperMoE Engine
 
 HyperMoE is a C++20 inference-runtime project for hierarchical Mixture-of-Experts
-memory management across VRAM, pinned RAM, ordinary RAM, and NVMe. Phase 3.5 adds
-an asynchronous expert scheduler above the Phase 3 CPU/optional-CUDA hardware
-layer: explicit residency states, demand-aware transfer priorities, request
-coalescing, event notifications, predictive prefetch, and pipeline simulation.
+memory management across VRAM, pinned RAM, ordinary RAM, and NVMe. Phase 4 adds a
+production-oriented, optional NVIDIA CUDA foundation beneath the asynchronous
+expert scheduler: device/runtime ownership, persistent role-based streams,
+event-completed copies, and a reusable VRAM allocation pool.
 There is intentionally no transformer inference, model adapter, or custom CUDA
 kernel implementation yet.
 
@@ -20,6 +20,7 @@ ctest --test-dir build --output-on-failure
 ./build/hypermoe_hardware_benchmark --report=hardware_report.json
 ./build/hypermoe_pipeline_benchmark --tokens=100000 \
   --report=pipeline_report.json
+./build/hypermoe_cuda_benchmark --report=cuda_report.json
 ```
 
 Enable runtime memory checks with:
@@ -100,3 +101,23 @@ The pipeline benchmark is a deterministic event simulation. Its NVMe, RAM, and
 GPU timing constants are inputs to a scheduling comparison and are not hardware
 measurements. Use the hardware benchmark separately before tuning target-system
 defaults.
+
+## CUDA runtime foundation
+
+`CudaRuntime` performs non-throwing device discovery and owns CUDA streams and
+events when a usable device exists. `CudaStreamManager` creates three persistent
+nonblocking streams: compute for future tensor execution, transfer for demanded
+expert movement, and prefetch for speculative movement. The transfer manager uses
+the latter two only for a CUDA backend; CPU builds contain no CUDA header or
+runtime dependency.
+
+`CudaMemoryPool` rounds allocations to 256-byte size classes, reuses the smallest
+suitable cached block, and reports reserved, active, free, peak, allocation, and
+reuse counters. `CudaBuffer` and pool-backed `DeviceBuffer` ownership return blocks
+automatically. Pool shutdown frees cached blocks immediately and lets active
+buffers safely release through retained control state later.
+
+The CUDA benchmark measures direct and pooled VRAM allocation rate, pinned and
+pageable host-to-device bandwidth, device-to-host bandwidth, and two-stream copy
+overlap. When CUDA is not compiled or no NVIDIA device is usable, it still emits a
+valid JSON report with zero GPU measurements and an explicit skip reason.

@@ -59,7 +59,10 @@ std::string HardwareInfo::toJson() const {
            << "  \"cuda_compiled\": " << (cudaCompiled ? "true" : "false") << ",\n"
            << "  \"cuda_available\": " << (cudaAvailable ? "true" : "false") << ",\n"
            << "  \"gpu_name\": \"" << jsonEscape(gpuName) << "\",\n"
+           << "  \"compute_capability\": \"" << jsonEscape(computeCapability)
+           << "\",\n"
            << "  \"vram_bytes\": " << vramBytes << ",\n"
+           << "  \"free_vram_bytes\": " << freeVramBytes << ",\n"
            << "  \"cuda_runtime_version\": " << cudaRuntimeVersion << ",\n"
            << "  \"cuda_driver_version\": " << cudaDriverVersion << "\n"
            << "}";
@@ -108,7 +111,12 @@ HardwareInfo detectHardware(const std::filesystem::path& storagePath) {
     const auto cuda = backend::CudaBackend::query();
     info.cudaAvailable = cuda.available;
     info.gpuName = cuda.deviceName;
+    if (cuda.available) {
+        info.computeCapability = std::to_string(cuda.computeCapabilityMajor) + "." +
+                                 std::to_string(cuda.computeCapabilityMinor);
+    }
     info.vramBytes = cuda.totalVramBytes;
+    info.freeVramBytes = cuda.freeVramBytes;
     info.cudaRuntimeVersion = cuda.runtimeVersion;
     info.cudaDriverVersion = cuda.driverVersion;
     return info;

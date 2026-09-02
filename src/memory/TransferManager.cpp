@@ -1,6 +1,9 @@
 #include "memory/TransferManager.hpp"
 
 #include "backend/CpuBackend.hpp"
+#include "backend/cuda/CudaMemoryPool.hpp"
+#include "backend/cuda/CudaRuntime.hpp"
+#include "backend/cuda/CudaStreamManager.hpp"
 
 #include <cstring>
 #include <exception>
@@ -8,6 +11,15 @@
 #include <utility>
 
 namespace hypermoe {
+namespace {
+
+double bandwidthGiBs(std::uint64_t bytes, std::chrono::nanoseconds duration) {
+    if (bytes == 0 || duration.count() <= 0) return 0.0;
+    const auto seconds = std::chrono::duration<double>(duration).count();
+    return static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0) / seconds;
+}
+
+} // namespace
 
 TransferHandle::TransferHandle(std::future<TransferResult> result,
                                std::shared_ptr<std::atomic_bool> cancelled)
@@ -46,6 +58,14 @@ TransferManager::TransferManager(std::shared_ptr<const storage::DiskLoader> load
     if (!backend_ || !backend_->isAvailable()) {
         throw std::invalid_argument("TransferManager requires an available backend");
     }
+    if (backend_->kind() == backend::BackendKind::Cuda) {
+        memoryPool_ = std::make_shared<backend::CudaMemoryPool>(backend_);
+        cudaRuntime_ = std::make_shared<backend::CudaRuntime>();
+        if (!cudaRuntime_->available()) {
+            throw std::runtime_error("CUDA backend has no matching runtime device");
+        }
+        cudaStreams_ = std::make_unique<backend::CudaStreamManager>(cudaRuntime_);
+    }
     workers_.reserve(workerCount);
     for (std::size_t index = 0; index < workerCount; ++index) {
         workers_.emplace_back(&TransferManager::workerLoop, this);
@@ -79,6 +99,14 @@ TransferHandle TransferManager::submit(TransferRequest request) {
 std::size_t TransferManager::pending() const {
     std::scoped_lock lock(mutex_);
     return tasks_.size();
+}
+
+backend::BackendKind TransferManager::backendKind() const noexcept {
+    return backend_->kind();
+}
+
+std::shared_ptr<backend::CudaMemoryPool> TransferManager::memoryPool() const noexcept {
+    return memoryPool_;
 }
 
 void TransferManager::shutdown() {
@@ -132,6 +160,8 @@ void TransferManager::workerLoop() {
         }
         backend::StreamHandle stream = nullptr;
         backend::EventHandle completion = nullptr;
+        bool ownsStream = false;
+        std::unique_lock<std::mutex> cudaStreamLock;
         try {
             storage::LoadedExpert loaded;
             std::shared_ptr<const std::vector<std::byte>> sourceBuffer;
@@ -188,7 +218,14 @@ void TransferManager::workerLoop() {
             if (task->request.destination == MemoryTier::Ram) {
                 if (sourceDevice) {
                     auto pinned = std::make_shared<PinnedBuffer>(loaded.record.size, backend_);
-                    stream = backend_->createStream();
+                    if (cudaStreams_) {
+                        cudaStreamLock =
+                            std::unique_lock<std::mutex>(cudaTransferStreamMutex_);
+                        stream = cudaStreams_->stream(backend::CudaStreamRole::Transfer);
+                    } else {
+                        stream = backend_->createStream();
+                        ownsStream = true;
+                    }
                     completion = backend_->createEvent();
                     const auto transferStart = std::chrono::steady_clock::now();
                     backend_->copyFromDevice(pinned->data(), sourceDevice->data(),
@@ -198,6 +235,9 @@ void TransferManager::workerLoop() {
                     backend_->synchronize(stream);
                     result.backendTransferTime =
                         std::chrono::steady_clock::now() - transferStart;
+                    result.cudaTransfer = backend_->kind() == backend::BackendKind::Cuda;
+                    result.backendBandwidthGiBs =
+                        bandwidthGiBs(loaded.record.size, result.backendTransferTime);
                     const auto copyStart = std::chrono::steady_clock::now();
                     result.buffer = std::make_shared<const std::vector<std::byte>>(
                         pinned->bytes().begin(), pinned->bytes().end());
@@ -205,8 +245,10 @@ void TransferManager::workerLoop() {
                     result.usedPinnedMemory = pinned->isPinned();
                     backend_->destroyEvent(completion);
                     completion = nullptr;
-                    backend_->destroyStream(stream);
+                    if (ownsStream) backend_->destroyStream(stream);
                     stream = nullptr;
+                    ownsStream = false;
+                    if (cudaStreamLock.owns_lock()) cudaStreamLock.unlock();
                 } else if (sourceBuffer) {
                     result.buffer = sourceBuffer;
                 } else {
@@ -216,7 +258,14 @@ void TransferManager::workerLoop() {
             } else if (task->request.destination == MemoryTier::PinnedRam) {
                 auto pinned = std::make_shared<PinnedBuffer>(loaded.record.size, backend_);
                 if (sourceDevice) {
-                    stream = backend_->createStream();
+                    if (cudaStreams_) {
+                        cudaStreamLock =
+                            std::unique_lock<std::mutex>(cudaTransferStreamMutex_);
+                        stream = cudaStreams_->stream(backend::CudaStreamRole::Transfer);
+                    } else {
+                        stream = backend_->createStream();
+                        ownsStream = true;
+                    }
                     completion = backend_->createEvent();
                     const auto transferStart = std::chrono::steady_clock::now();
                     backend_->copyFromDevice(pinned->data(), sourceDevice->data(),
@@ -226,10 +275,15 @@ void TransferManager::workerLoop() {
                     backend_->synchronize(stream);
                     result.backendTransferTime =
                         std::chrono::steady_clock::now() - transferStart;
+                    result.cudaTransfer = backend_->kind() == backend::BackendKind::Cuda;
+                    result.backendBandwidthGiBs =
+                        bandwidthGiBs(loaded.record.size, result.backendTransferTime);
                     backend_->destroyEvent(completion);
                     completion = nullptr;
-                    backend_->destroyStream(stream);
+                    if (ownsStream) backend_->destroyStream(stream);
                     stream = nullptr;
+                    ownsStream = false;
+                    if (cudaStreamLock.owns_lock()) cudaStreamLock.unlock();
                 } else {
                     const auto copyStart = std::chrono::steady_clock::now();
                     if (sourcePinned) {
@@ -259,8 +313,23 @@ void TransferManager::workerLoop() {
                     std::memcpy(staging->data(), sourceBuffer->data(), staging->size());
                     result.ramCopyTime = std::chrono::steady_clock::now() - copyStart;
                 }
-                auto device = std::make_shared<backend::DeviceBuffer>(backend_, loaded.record.size);
-                stream = backend_->createStream();
+                auto device = memoryPool_
+                                  ? memoryPool_->allocateDeviceBuffer(loaded.record.size)
+                                  : std::make_shared<backend::DeviceBuffer>(
+                                        backend_, loaded.record.size);
+                if (cudaStreams_) {
+                    constexpr int kPrefetchPriority = 300;
+                    const bool isPrefetch = task->request.priority == kPrefetchPriority;
+                    cudaStreamLock = std::unique_lock<std::mutex>(
+                        isPrefetch ? cudaPrefetchStreamMutex_
+                                   : cudaTransferStreamMutex_);
+                    const auto role = isPrefetch ? backend::CudaStreamRole::Prefetch
+                                                 : backend::CudaStreamRole::Transfer;
+                    stream = cudaStreams_->stream(role);
+                } else {
+                    stream = backend_->createStream();
+                    ownsStream = true;
+                }
                 completion = backend_->createEvent();
                 const auto transferStart = std::chrono::steady_clock::now();
                 backend_->copyToDevice(device->data(), staging->data(), staging->size(), stream);
@@ -270,12 +339,17 @@ void TransferManager::workerLoop() {
                 result.backendTransferTime =
                     std::chrono::steady_clock::now() - transferStart;
                 result.ramToVramBytes = loaded.record.size;
+                result.cudaTransfer = backend_->kind() == backend::BackendKind::Cuda;
+                result.backendBandwidthGiBs =
+                    bandwidthGiBs(result.ramToVramBytes, result.backendTransferTime);
                 result.usedPinnedMemory = staging->isPinned();
                 result.deviceBuffer = std::move(device);
                 backend_->destroyEvent(completion);
                 completion = nullptr;
-                backend_->destroyStream(stream);
+                if (ownsStream) backend_->destroyStream(stream);
                 stream = nullptr;
+                ownsStream = false;
+                if (cudaStreamLock.owns_lock()) cudaStreamLock.unlock();
             } else {
                 throw std::invalid_argument("transfer destination cannot be NVMe");
             }
@@ -289,7 +363,7 @@ void TransferManager::workerLoop() {
             task->promise.set_value(std::move(result));
         } catch (...) {
             if (completion != nullptr) backend_->destroyEvent(completion);
-            if (stream != nullptr) backend_->destroyStream(stream);
+            if (stream != nullptr && ownsStream) backend_->destroyStream(stream);
             task->promise.set_exception(std::current_exception());
         }
     }

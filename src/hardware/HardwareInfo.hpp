@@ -15,7 +15,9 @@ struct HardwareInfo {
     bool cudaCompiled{};
     bool cudaAvailable{};
     std::string gpuName;
+    std::string computeCapability;
     std::uint64_t vramBytes{};
+    std::uint64_t freeVramBytes{};
     int cudaRuntimeVersion{};
     int cudaDriverVersion{};
 

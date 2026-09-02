@@ -20,6 +20,12 @@
 
 namespace hypermoe {
 
+namespace backend {
+class CudaMemoryPool;
+class CudaRuntime;
+class CudaStreamManager;
+}
+
 struct TransferResult;
 using TransferCallback = std::function<void(const TransferResult&)>;
 
@@ -56,6 +62,8 @@ struct TransferResult {
     std::chrono::nanoseconds nvmeReadTime{};
     std::chrono::nanoseconds ramCopyTime{};
     std::chrono::nanoseconds backendTransferTime{};
+    double backendBandwidthGiBs{};
+    bool cudaTransfer{};
 };
 
 class TransferHandle {
@@ -91,6 +99,8 @@ public:
 
     [[nodiscard]] TransferHandle submit(TransferRequest request);
     [[nodiscard]] std::size_t pending() const;
+    [[nodiscard]] backend::BackendKind backendKind() const noexcept;
+    [[nodiscard]] std::shared_ptr<backend::CudaMemoryPool> memoryPool() const noexcept;
     void shutdown();
 
 private:
@@ -111,6 +121,11 @@ private:
 
     std::shared_ptr<const storage::DiskLoader> loader_;
     std::shared_ptr<backend::ComputeBackend> backend_;
+    std::shared_ptr<backend::CudaMemoryPool> memoryPool_;
+    std::shared_ptr<backend::CudaRuntime> cudaRuntime_;
+    std::unique_ptr<backend::CudaStreamManager> cudaStreams_;
+    std::mutex cudaTransferStreamMutex_;
+    std::mutex cudaPrefetchStreamMutex_;
     mutable std::mutex mutex_;
     std::condition_variable ready_;
     std::priority_queue<std::shared_ptr<Task>,

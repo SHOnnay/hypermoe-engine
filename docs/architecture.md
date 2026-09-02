@@ -1,4 +1,4 @@
-# HyperMoE architecture through Phase 3.5
+# HyperMoE architecture through Phase 4
 
 The runtime separates durable storage, movement, residency, eviction policy,
 hardware access, and measurement so future model adapters do not own memory
@@ -21,9 +21,9 @@ experts.bin + experts.index
           │ measured host copy
           ▼
   PinnedBuffer (cudaHostAlloc or aligned fallback)
-          │ ComputeBackend::copyToDevice
+          │ persistent transfer/prefetch stream
           ▼
- DeviceBuffer (cudaMalloc or CPU allocation)
+ CudaMemoryPool-backed DeviceBuffer
           │ stream + completion event
           ▼
        future consumer
@@ -57,6 +57,16 @@ experts.bin + experts.index
 - `ComputeBackend` is the capability boundary. `CpuBackend` is always usable;
   `CudaBackend` is compiled only when CUDAToolkit is detected and also checks for
   a runtime device.
+- `CudaRuntime` initializes a selected device, reports compute capability and
+  live VRAM information, owns created streams/events, and shuts them down after
+  synchronization. With CUDA disabled it remains queryable and reports
+  unavailable without including CUDA headers in public interfaces.
+- `CudaStreamManager` owns persistent compute, transfer, and prefetch streams.
+  Transfer workers select transfer or prefetch by request priority instead of
+  creating a stream for every expert.
+- `CudaMemoryPool` caches 256-byte-aligned device blocks and uses best-fit reuse.
+  Its control state can outlive the pool facade, so outstanding RAII buffers do
+  not lose the backend needed for safe release.
 - `PinnedBuffer` uses `cudaHostAlloc` when CUDA is active and aligned ordinary
   memory otherwise. `DeviceBuffer` ties allocation lifetime to its backend.
 - `MemoryManager` enforces logical VRAM/RAM limits with allocation IDs.
@@ -84,9 +94,12 @@ task's priority is immutable after dispatch, preventing worker/request races.
 `ExpertManager` serializes its existing ownership transitions, while
 `MemoryManager` independently protects accounting.
 
-The transfer future is fulfilled only after the backend completion event. A CUDA
-device allocation therefore cannot become visible to a consumer while its copy is
-incomplete.
+The transfer future is fulfilled only after `cudaEventSynchronize` through the
+backend event API. A CUDA device allocation therefore cannot become visible to a
+consumer while its `cudaMemcpyAsync` is incomplete. Transfer results include
+bytes, wall-clock transfer duration, effective bandwidth, and whether CUDA handled
+the movement. Scheduler subscribers receive CUDA-specific transfer events in
+addition to tier-independent events.
 
 ## Deferred intentionally
 
@@ -95,4 +108,5 @@ incomplete.
 - Direct-storage integrations and unbuffered platform-specific NVMe benchmarks
 - Router-produced probabilities and measured compute/transfer overlap
 - Automatic scheduler-driven capacity selection and eviction policy execution
+- Tensor descriptors, kernel launch policy, and CUDA graph capture
 - Custom CUDA kernels

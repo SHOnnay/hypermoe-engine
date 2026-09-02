@@ -19,6 +19,10 @@ enum class RuntimeEventType {
     ExpertReady,
     CacheEvicted,
     TransferFailed,
+    CudaTransferStarted,
+    CudaTransferCompleted,
+    CudaKernelStarted,
+    CudaKernelCompleted,
 };
 
 [[nodiscard]] std::string_view toString(RuntimeEventType type) noexcept;

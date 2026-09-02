@@ -10,7 +10,10 @@ namespace hypermoe::backend {
 struct CudaRuntimeInfo {
     bool available{};
     std::string deviceName;
+    int computeCapabilityMajor{};
+    int computeCapabilityMinor{};
     std::uint64_t totalVramBytes{};
+    std::uint64_t freeVramBytes{};
     int runtimeVersion{};
     int driverVersion{};
 };
@@ -26,7 +29,7 @@ public:
     CudaBackend& operator=(const CudaBackend&) = delete;
 
     [[nodiscard]] static bool compiledWithCuda() noexcept;
-    [[nodiscard]] static CudaRuntimeInfo query(int device = 0) noexcept;
+    [[nodiscard]] static CudaRuntimeInfo query(int device = 0);
 
     [[nodiscard]] BackendKind kind() const noexcept override;
     [[nodiscard]] std::string_view name() const noexcept override;
