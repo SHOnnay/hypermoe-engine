@@ -1,4 +1,4 @@
-# HyperMoE architecture through Phase 8
+# HyperMoE architecture through Phase 9
 
 The runtime separates durable storage, movement, residency, eviction policy,
 hardware access, and measurement so future model adapters do not own memory
@@ -44,10 +44,33 @@ experts.bin + experts.index
     generic MoE layer output
 ```
 
+Phase 9 adds an offline conversion branch before the store:
+
+```text
+Qwen SafeTensors → QwenImporter → source ModelManifest
+                                   │
+                                   ▼
+                         WeightConverter + ExpertPacker
+                                   │
+                                   ▼
+                    runtime manifest + experts.bin/index
+                                   │
+                                   ▼
+ ExpertStore → Scheduler → ExpertManager → ExpertResidencyLease
+                                   │
+                                   ▼
+                   TensorView gate/up/down slices
+                                   │
+                                   ▼
+                         ExpertMlpExecutor
+```
+
 ## Components
 
 - `ExpertIndex` parses a versioned, fixed-width little-endian format and builds
   an O(1) composite layer/expert lookup table.
+- Index v2 appends projection descriptors and builds O(1) gate/up/down lookup;
+  the original expert record remains byte-compatible with Phase 2 stores.
 - `MappedFile` owns a read-only OS mapping and exposes checked subspans without
   reading the complete model into an application buffer.
 - `ExpertStore` validates record bounds and CRC32 and supports mmap-backed or
@@ -89,6 +112,8 @@ experts.bin + experts.index
   transfer manager, cold movement owns checked weight bytes. A resident backend
   buffer can be exposed as a tensor only when shape/dtype metadata matches its
   exact stored byte size.
+- `ExpertResidencyLease` pins a resident expert across view creation, executor
+  work, and backend synchronization. Leased experts are not eviction candidates.
 - `ExpertManager` keys residency by `(layer_id, expert_id)`, allowing model-local
   expert IDs to repeat across layers. Existing single-ID APIs remain valid only
   when the registered ID is unambiguous.
@@ -134,6 +159,10 @@ experts.bin + experts.index
 - `ModelManifest` v2 records source files, physical tensor byte ranges, router
   configuration, output/input matrix orientation, and per-expert gate/up/down
   slices. Runtime readers validate all references before use.
+- `ExpertPacker` range-reads those slices, explicitly transposes declared layouts,
+  and creates the three-file runtime store without interpreting Qwen names.
+- `CorrectnessOracle` independently computes router and gated-MLP references and
+  applies dtype-specific comparison tolerances.
 - Batch routing returns one decision per token plus groups of token indices and
   scores for each selected expert, preparing grouped expert dispatch.
 - `TransitionDatabase` keeps statistics per inference stream so tokens in a batch

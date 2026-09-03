@@ -3,6 +3,7 @@
 #include "hypermoe/experts/cache_policy.hpp"
 #include "hypermoe/memory/memory_manager.hpp"
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -14,9 +15,11 @@
 namespace hypermoe {
 
 class TransferManager;
+class ExpertManager;
 namespace backend {
 class DeviceBuffer;
 }
+
 namespace tensor {
 class Shape;
 class Tensor;
@@ -28,6 +31,32 @@ enum class QuantizedDType : std::uint32_t;
 struct QuantizationParameters;
 }
 }
+
+// A residency lease keeps the manager's logical allocation and physical
+// DeviceBuffer resident for the full lifetime of any TensorView made from it.
+class ExpertResidencyLease {
+public:
+    ExpertResidencyLease() = default;
+    ~ExpertResidencyLease();
+    ExpertResidencyLease(const ExpertResidencyLease&) = delete;
+    ExpertResidencyLease& operator=(const ExpertResidencyLease&) = delete;
+    ExpertResidencyLease(ExpertResidencyLease&& other) noexcept;
+    ExpertResidencyLease& operator=(ExpertResidencyLease&& other) noexcept;
+
+    [[nodiscard]] explicit operator bool() const noexcept;
+    [[nodiscard]] std::shared_ptr<backend::DeviceBuffer> buffer() const noexcept;
+    [[nodiscard]] tensor::TensorView view(const tensor::Shape& shape,
+                                          tensor::DType dtype) const;
+
+private:
+    friend class ExpertManager;
+    ExpertResidencyLease(std::shared_ptr<std::atomic_size_t> leaseCount,
+                         std::shared_ptr<backend::DeviceBuffer> buffer) noexcept;
+    void reset() noexcept;
+
+    std::shared_ptr<std::atomic_size_t> leaseCount_;
+    std::shared_ptr<backend::DeviceBuffer> buffer_;
+};
 
 enum class RequestSource {
     VramHit,
@@ -107,6 +136,8 @@ public:
     void adoptDeviceWeights(LayerId layerId,
                             ExpertId id,
                             std::shared_ptr<backend::DeviceBuffer> buffer);
+    [[nodiscard]] ExpertResidencyLease acquireResidentExpert(
+        LayerId layerId, ExpertId id);
     [[nodiscard]] std::size_t expertCount() const;
     [[nodiscard]] ExpertManagerStats stats() const;
 
@@ -117,6 +148,7 @@ private:
         std::optional<MemoryAllocation> allocation;
         std::shared_ptr<const std::vector<std::byte>> weights;
         std::shared_ptr<backend::DeviceBuffer> deviceWeights;
+        std::shared_ptr<std::atomic_size_t> residencyLeases;
     };
 
     using ExpertKey = std::uint64_t;
@@ -134,6 +166,7 @@ private:
     [[nodiscard]] std::vector<ExpertId> candidatesLocked(MemoryTier tier) const;
     [[nodiscard]] ManagedExpert& requireExpertLocked(LayerId layerId, ExpertId id);
     [[nodiscard]] LayerId resolveLegacyLayer(ExpertId id) const;
+    friend class ExpertResidencyLease;
 
     MemoryManager& memory_;
     std::unique_ptr<CachePolicy> policy_;

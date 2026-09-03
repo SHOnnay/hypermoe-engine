@@ -27,15 +27,21 @@ std::string readTextFile(const std::filesystem::path& path) {
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
 
+std::string readStoreMetadata(const std::filesystem::path& directory) {
+    const auto legacy = directory / "metadata.json";
+    if (std::filesystem::exists(legacy)) return readTextFile(legacy);
+    return readTextFile(directory / "manifest.json");
+}
+
 } // namespace
 
 ExpertStore::ExpertStore(const std::filesystem::path& modelDirectory)
     : dataPath_(modelDirectory / "experts.bin"),
       index_(ExpertIndex::load(modelDirectory / "experts.index")),
       mappedData_(dataPath_),
-      metadataJson_(readTextFile(modelDirectory / "metadata.json")) {
+      metadataJson_(readStoreMetadata(modelDirectory)) {
     if (metadataJson_.empty()) {
-        throw StorageError("model metadata.json is empty");
+        throw StorageError("model metadata manifest is empty");
     }
     for (const auto& record : index_.records()) {
         if (record.offset > mappedData_.size() ||
@@ -43,6 +49,20 @@ ExpertStore::ExpertStore(const std::filesystem::path& modelDirectory)
             throw StorageError("expert index references data outside experts.bin");
         }
     }
+}
+
+std::span<const std::byte> ExpertStore::mappedProjection(
+    std::uint32_t layerId,
+    std::uint32_t expertId,
+    ProjectionType type,
+    bool validateChecksum) const {
+    const auto record = index_.findProjection(layerId, expertId, type);
+    if (!record) throw StorageError("expert projection is not present in the index");
+    const auto bytes = mappedData_.view(record->offset, record->size);
+    if (validateChecksum && crc32(bytes) != record->checksum) {
+        throw StorageError("expert projection checksum mismatch: data is corrupted");
+    }
+    return bytes;
 }
 
 void ExpertStore::create(const std::filesystem::path& modelDirectory,

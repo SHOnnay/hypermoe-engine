@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(HyperMoE VERSION 0.8.0 LANGUAGES CXX)
+project(HyperMoE VERSION 0.9.0 LANGUAGES CXX)
 
 option(HYPERMOE_BUILD_TESTS "Build HyperMoE tests" ON)
 option(HYPERMOE_BUILD_BENCHMARKS "Build HyperMoE simulation benchmarks" ON)
@@ -60,6 +60,9 @@ add_library(hypermoe
     src/prediction/TransitionDatabase.cpp
     src/prediction/ExpertPredictor.cpp
     src/core/runtime/MoERuntime.cpp
+    tools/model_convert/WeightConverter.cpp
+    tools/model_convert/ExpertPacker.cpp
+    src/validation/CorrectnessOracle.cpp
 )
 add_library(HyperMoE::hypermoe ALIAS hypermoe)
 
@@ -68,6 +71,7 @@ target_include_directories(hypermoe
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
         $<INSTALL_INTERFACE:include>
 )
 target_link_libraries(hypermoe PUBLIC Threads::Threads)
@@ -134,6 +138,10 @@ if(HYPERMOE_BUILD_TESTS)
     add_executable(hypermoe_phase8_tests tests/phase8_tests.cpp)
     target_link_libraries(hypermoe_phase8_tests PRIVATE HyperMoE::hypermoe)
     add_test(NAME hypermoe_phase8 COMMAND hypermoe_phase8_tests)
+
+    add_executable(hypermoe_phase9_tests tests/phase9_tests.cpp)
+    target_link_libraries(hypermoe_phase9_tests PRIVATE HyperMoE::hypermoe)
+    add_test(NAME hypermoe_phase9 COMMAND hypermoe_phase9_tests)
 endif()
 
 if(HYPERMOE_BUILD_BENCHMARKS)
@@ -171,6 +179,10 @@ if(HYPERMOE_BUILD_BENCHMARKS)
         benchmarks/end_to_end/end_to_end_benchmark.cpp)
     target_link_libraries(hypermoe_end_to_end_benchmark PRIVATE HyperMoE::hypermoe)
 
+    add_executable(hypermoe_real_expert_benchmark
+        benchmarks/real_expert/real_expert_benchmark.cpp)
+    target_link_libraries(hypermoe_real_expert_benchmark PRIVATE HyperMoE::hypermoe)
+
     add_executable(hypermoe_model_inspect
         tools/model_inspect/model_inspect.cpp)
     target_link_libraries(hypermoe_model_inspect PRIVATE HyperMoE::hypermoe)
@@ -178,4 +190,8 @@ if(HYPERMOE_BUILD_BENCHMARKS)
     add_executable(hypermoe_model_import
         tools/model_import/model_import.cpp)
     target_link_libraries(hypermoe_model_import PRIVATE HyperMoE::hypermoe)
+
+    add_executable(hypermoe_model_convert
+        tools/model_convert/model_convert.cpp)
+    target_link_libraries(hypermoe_model_convert PRIVATE HyperMoE::hypermoe)
 endif()

@@ -35,6 +35,11 @@ public:
     mappedExpert(std::uint32_t layerId,
                  std::uint32_t expertId,
                  bool validateChecksum = true) const;
+    [[nodiscard]] std::span<const std::byte>
+    mappedProjection(std::uint32_t layerId,
+                     std::uint32_t expertId,
+                     ProjectionType type,
+                     bool validateChecksum = true) const;
     [[nodiscard]] std::vector<std::byte>
     readExpert(std::uint32_t layerId,
                std::uint32_t expertId,

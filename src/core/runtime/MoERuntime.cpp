@@ -126,8 +126,9 @@ LayerExecutionResult MoERuntime::executeLayer(
         }
         scheduler_->acquire(layerId, expertId);
         try {
-            const auto payload = experts_.residentDeviceTensorView(
-                layerId, expertId, tensor::Shape{expert->sizeBytes}, tensor::DType::INT8);
+            auto residency = experts_.acquireResidentExpert(layerId, expertId);
+            const auto payload = residency.view(
+                tensor::Shape{expert->sizeBytes}, tensor::DType::INT8);
             const auto weights = weightMap_.createViews(
                 layerId, expertId, payload, payloadOffsets[index]);
             auto expertOutput =

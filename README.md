@@ -1,10 +1,10 @@
 # HyperMoE Engine
 
 HyperMoE is a C++20 inference-runtime project for hierarchical Mixture-of-Experts
-memory management across VRAM, pinned RAM, ordinary RAM, and NVMe. Phase 8 adds
-real SafeTensors metadata inspection, Qwen MoE artifact import, a portable
-HyperMoE v2 manifest, batch top-k routing with expert grouping, and a statistical
-expert predictor connected to scheduler prefetching. There is intentionally no
+memory management across VRAM, pinned RAM, ordinary RAM, and NVMe. Phase 9 adds
+the first real Qwen-style artifact-to-expert path: SafeTensors validation, offline
+expert packing, layout conversion, projection-aware indexing, residency leases,
+and CPU output comparison against an independent oracle. There is intentionally no
 complete transformer inference, tokenizer, server, or custom CUDA kernel.
 
 ## Build and run
@@ -27,6 +27,9 @@ ctest --test-dir build --output-on-failure
   --report=end_to_end_report.json
 ./build/hypermoe_model_inspect /path/to/model/metadata.json
 ./build/hypermoe_model_import /path/to/qwen-artifact hypermoe-manifest.json
+./build/hypermoe_model_convert /path/to/qwen-artifact hypermoe_model
+./build/hypermoe_real_expert_benchmark /path/to/qwen-artifact \
+  real_expert_report.json
 ```
 
 Enable runtime memory checks with:
@@ -58,13 +61,14 @@ A model directory contains:
 model/
   experts.bin
   experts.index
-  metadata.json
+  manifest.json
 ```
 
-`experts.index` has a versioned 32-byte header followed by fixed 32-byte,
-little-endian records. Every record contains layer ID, expert ID, byte offset,
-byte size, quantization code, and payload CRC32. Payload offsets are 4 KiB aligned.
-The loader validates bounds and checksums and reads only the requested range.
+`experts.index` retains the fixed 32-byte, little-endian expert record and v2 adds
+fixed projection records for gate/up/down role, range, dtype, shape, and CRC32.
+Payload offsets are 4 KiB aligned. The loader validates bounds and checksums and
+reads only the requested expert or projection range. Legacy `metadata.json`
+stores remain readable.
 
 See [architecture](docs/architecture.md) and
 [design decisions](docs/design-decisions.md) for ownership and extension points.
@@ -214,3 +218,19 @@ See [importer](docs/components/importer.md),
 [predictor](docs/components/predictor.md). The end-to-end benchmark labels its
 storage time as modeled; routing and prediction orchestration are measured CPU
 work, not RTX 4070 results.
+
+## Real artifact execution
+
+`ExpertPacker` converts the imported v2 manifest into `manifest.json`, aligned
+contiguous expert payloads in `experts.bin`, and a projection-aware
+`experts.index`. `WeightConverter` explicitly normalizes matrix orientation to
+`INPUT_OUTPUT`; names never imply layout. The runtime loads a whole expert once,
+adopts the transfer buffer, and creates checked zero-copy projection views.
+
+`ExpertResidencyLease` pins both logical residency and the physical buffer for
+the complete executor call. Eviction excludes leased experts. The Phase 9 test
+uses a format-correct reduced Qwen3 SafeTensors artifact and compares router
+top-k, routing scores, and one FP32 expert output to an independent scalar oracle.
+See [model conversion](docs/components/model-conversion.md),
+[real execution](docs/components/real-execution.md), and
+[correctness validation](docs/components/correctness-validation.md).

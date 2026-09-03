@@ -321,12 +321,12 @@ can change independently from HyperMoE scheduling. Phase 8 therefore inspects a
 source artifact once and emits a strict v2 manifest. Runtime code consumes only
 validated physical locations and logical expert roles.
 
-This is not a copy or conversion of weight payloads. SafeTensors inspection reads
-the bounded header, validates every declared range against its shard, and records
-relative file paths. A later packer can use the manifest to build `experts.bin`
-without parsing Qwen names again. Absolute paths and parent-directory traversal
-are forbidden so a manifest remains relocatable and cannot escape its artifact
-root.
+Phase 8 import alone does not copy or convert payloads: SafeTensors inspection
+reads the bounded header, validates every declared range against its shard, and
+records relative file paths. Phase 9's separate offline packer then uses that
+manifest to build `experts.bin` without parsing Qwen names again. Absolute paths
+and parent-directory traversal are forbidden so a manifest remains relocatable
+and cannot escape its artifact root.
 
 ## Why Qwen supports two expert layouts
 
@@ -360,3 +360,34 @@ contains both per-token decisions and deterministic expert groups. This avoids
 forcing the future executor to repeatedly scan all token decisions when building
 an expert batch. Capacity factors, token dropping, and grouped GEMM remain
 deferred because they are model/runtime policies beyond reference routing.
+
+## Why conversion is offline and manifest-driven
+
+SafeTensors is optimized for distribution and inspection, not repeated
+expert-granular residency movement. Offline packing makes each expert one aligned
+contiguous range while preserving projection subranges and checksums. The packer
+consumes the importer manifest rather than parsing Qwen names, so format-specific
+knowledge remains at the artifact boundary and the runtime contract is stable.
+
+Layout conversion is explicit. Upstream linear weights are commonly stored as
+`OUTPUT_INPUT`, while the current row-major backend consumes `INPUT_OUTPUT`.
+Transposing once during packing removes hidden runtime copies and makes a wrong
+orientation detectable through shape and oracle tests.
+
+## Why execution uses a residency lease
+
+A `TensorView` intentionally does not own expert bytes. Backend-level temporary
+promotion prevents deallocation during one operation, but an expert MLP is a
+sequence of operations and the cache can otherwise move the payload between
+them. A move-only residency lease increments a manager pin count and owns the
+device buffer for the whole executor call. Eviction selection ignores pinned
+experts and explicit movement rejects an active lease. This is the synchronization
+boundary for future asynchronous CUDA work as well as current CPU execution.
+
+## Why the correctness oracle is independent
+
+Reusing tensor matmul or router code in expected-value generation would allow the
+same layout or offset defect to pass twice. The oracle therefore uses scalar
+loops and its own routing/top-k implementation. FP32 is the executed Phase 9
+path; FP16, BF16, and INT8 tolerances are recorded now as validation policy, not
+as claims that those execution paths exist.

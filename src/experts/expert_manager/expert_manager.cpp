@@ -30,6 +30,55 @@ double pcieLatency(std::size_t bytes) {
 
 } // namespace
 
+ExpertResidencyLease::ExpertResidencyLease(
+    std::shared_ptr<std::atomic_size_t> leaseCount,
+    std::shared_ptr<backend::DeviceBuffer> buffer) noexcept
+    : leaseCount_(std::move(leaseCount)), buffer_(std::move(buffer)) {}
+
+ExpertResidencyLease::~ExpertResidencyLease() { reset(); }
+
+ExpertResidencyLease::ExpertResidencyLease(ExpertResidencyLease&& other) noexcept
+    : leaseCount_(std::move(other.leaseCount_)),
+      buffer_(std::move(other.buffer_)) {}
+
+ExpertResidencyLease& ExpertResidencyLease::operator=(
+    ExpertResidencyLease&& other) noexcept {
+    if (this != &other) {
+        reset();
+        leaseCount_ = std::move(other.leaseCount_);
+        buffer_ = std::move(other.buffer_);
+    }
+    return *this;
+}
+
+ExpertResidencyLease::operator bool() const noexcept {
+    return leaseCount_ && buffer_ && *buffer_;
+}
+
+std::shared_ptr<backend::DeviceBuffer>
+ExpertResidencyLease::buffer() const noexcept { return buffer_; }
+
+tensor::TensorView ExpertResidencyLease::view(
+    const tensor::Shape& shape, tensor::DType dtype) const {
+    if (!*this) throw std::logic_error("expert residency lease is empty");
+    const auto elementBytes = tensor::sizeOf(dtype);
+    if (elementBytes == 0 ||
+        shape.storageElementCount() > buffer_->size() / elementBytes ||
+        shape.storageElementCount() * elementBytes != buffer_->size()) {
+        throw std::invalid_argument("tensor view metadata does not match expert weight bytes");
+    }
+    const auto device = buffer_->backend()->kind() == backend::BackendKind::Cuda
+                            ? tensor::Device::cuda(buffer_->backend()->deviceOrdinal())
+                            : tensor::Device::cpu();
+    return tensor::TensorView::fromDeviceBuffer(shape, dtype, device, buffer_, false);
+}
+
+void ExpertResidencyLease::reset() noexcept {
+    if (leaseCount_) (void)leaseCount_->fetch_sub(1, std::memory_order_acq_rel);
+    leaseCount_.reset();
+    buffer_.reset();
+}
+
 double ExpertManagerStats::vramHitRate() const noexcept {
     return requests == 0 ? 0.0 : static_cast<double>(vramHits) / static_cast<double>(requests);
 }
@@ -71,7 +120,8 @@ void ExpertManager::registerExpert(Expert expert) {
     const auto policyId = static_cast<ExpertId>(nextPolicyId_++);
     expert.location = MemoryTier::Nvme;
     experts_.emplace(expertKey,
-                     ManagedExpert{expert, policyId, std::nullopt, nullptr, nullptr});
+                     ManagedExpert{expert, policyId, std::nullopt, nullptr, nullptr,
+                                   std::make_shared<std::atomic_size_t>(0)});
     policyExperts_.emplace(policyId, expertKey);
     legacyExperts_[expert.id].push_back(expertKey);
     if (initialTier != MemoryTier::Nvme) {
@@ -375,6 +425,17 @@ void ExpertManager::adoptDeviceWeights(
     policy_->onAccess(managed.policyId);
 }
 
+ExpertResidencyLease ExpertManager::acquireResidentExpert(
+    LayerId layerId, ExpertId id) {
+    std::scoped_lock lock(mutex_);
+    auto& managed = requireExpertLocked(layerId, id);
+    if (managed.metadata.location != MemoryTier::Vram || !managed.deviceWeights) {
+        throw std::logic_error("expert does not own a resident device buffer");
+    }
+    managed.residencyLeases->fetch_add(1, std::memory_order_acq_rel);
+    return ExpertResidencyLease(managed.residencyLeases, managed.deviceWeights);
+}
+
 std::size_t ExpertManager::expertCount() const {
     std::scoped_lock lock(mutex_);
     return experts_.size();
@@ -393,6 +454,9 @@ void ExpertManager::moveExpertLocked(LayerId layerId,
     const auto source = managed.metadata.location;
     if (source == destination) {
         return;
+    }
+    if (managed.residencyLeases->load(std::memory_order_acquire) != 0) {
+        throw std::logic_error("cannot move expert while a residency lease is active");
     }
 
     // All cold loads stage through RAM; the DiskStore implementation will make
@@ -546,7 +610,8 @@ std::vector<ExpertId> ExpertManager::candidatesLocked(MemoryTier tier) const {
     candidates.reserve(experts_.size());
     for (const auto& [expertKey, expert] : experts_) {
         (void)expertKey;
-        if (expert.metadata.location == tier) {
+        if (expert.metadata.location == tier &&
+            expert.residencyLeases->load(std::memory_order_acquire) == 0) {
             candidates.push_back(expert.policyId);
         }
     }
