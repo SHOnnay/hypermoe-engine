@@ -40,12 +40,6 @@ cudaEvent_t nativeEvent(EventHandle event) noexcept {
 } // namespace
 #endif
 
-std::string DeviceInfo::computeCapability() const {
-    if (!available) return {};
-    return std::to_string(computeCapabilityMajor) + "." +
-           std::to_string(computeCapabilityMinor);
-}
-
 CudaRuntime::CudaRuntime(int device) : impl_(std::make_unique<Impl>()) {
     impl_->device = device;
 #ifdef HYPERMOE_HAS_CUDA

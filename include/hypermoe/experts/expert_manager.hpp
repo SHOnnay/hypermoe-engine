@@ -136,6 +136,9 @@ public:
     void adoptDeviceWeights(LayerId layerId,
                             ExpertId id,
                             std::shared_ptr<backend::DeviceBuffer> buffer);
+    void adoptHostWeights(LayerId layerId,
+                          ExpertId id,
+                          std::shared_ptr<const std::vector<std::byte>> buffer);
     [[nodiscard]] ExpertResidencyLease acquireResidentExpert(
         LayerId layerId, ExpertId id);
     [[nodiscard]] std::size_t expertCount() const;

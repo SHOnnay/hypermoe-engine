@@ -1,27 +1,11 @@
 #pragma once
 
 #include "backend/Backend.hpp"
+#include "backend/cuda/CudaDeviceInfo.hpp"
 
-#include <cstdint>
 #include <memory>
-#include <string>
 
 namespace hypermoe::backend {
-
-struct DeviceInfo {
-    bool available{};
-    int deviceOrdinal{};
-    std::string name;
-    int computeCapabilityMajor{};
-    int computeCapabilityMinor{};
-    std::uint64_t totalVramBytes{};
-    std::uint64_t freeVramBytes{};
-    std::uint32_t streamCount{};
-    int runtimeVersion{};
-    int driverVersion{};
-
-    [[nodiscard]] std::string computeCapability() const;
-};
 
 class CudaRuntime {
 public:

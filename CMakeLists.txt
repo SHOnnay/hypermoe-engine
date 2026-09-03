@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(HyperMoE VERSION 0.10.0 LANGUAGES CXX)
+project(HyperMoE VERSION 0.11.0 LANGUAGES CXX)
 
 option(HYPERMOE_BUILD_TESTS "Build HyperMoE tests" ON)
 option(HYPERMOE_BUILD_BENCHMARKS "Build HyperMoE simulation benchmarks" ON)
@@ -29,7 +29,9 @@ add_library(hypermoe
     src/backend/Backend.cpp
     src/backend/CpuBackend.cpp
     src/backend/cuda/CudaMemoryManager.cpp
+    src/backend/cuda/CudaDeviceInfo.cpp
     src/backend/cuda/CudaRuntime.cpp
+    src/backend/cuda/CudaRuntimeValidator.cpp
     src/backend/cuda/CudaMemoryPool.cpp
     src/backend/cuda/CudaStreamManager.cpp
     src/memory/PinnedBuffer.cpp
@@ -151,6 +153,10 @@ if(HYPERMOE_BUILD_TESTS)
     add_executable(hypermoe_phase10_tests tests/real_moe_layer_tests.cpp)
     target_link_libraries(hypermoe_phase10_tests PRIVATE HyperMoE::hypermoe)
     add_test(NAME hypermoe_phase10 COMMAND hypermoe_phase10_tests)
+
+    add_executable(hypermoe_phase11_tests tests/cuda_real_expert_tests.cpp)
+    target_link_libraries(hypermoe_phase11_tests PRIVATE HyperMoE::hypermoe)
+    add_test(NAME hypermoe_phase11 COMMAND hypermoe_phase11_tests)
 endif()
 
 if(HYPERMOE_BUILD_BENCHMARKS)
@@ -195,6 +201,10 @@ if(HYPERMOE_BUILD_BENCHMARKS)
     add_executable(hypermoe_model_validation_benchmark
         benchmarks/model_validation/model_validation_benchmark.cpp)
     target_link_libraries(hypermoe_model_validation_benchmark PRIVATE HyperMoE::hypermoe)
+
+    add_executable(hypermoe_cuda_runtime_benchmark
+        benchmarks/cuda_runtime/cuda_runtime_benchmark.cpp)
+    target_link_libraries(hypermoe_cuda_runtime_benchmark PRIVATE HyperMoE::hypermoe)
 
     add_executable(hypermoe_model_inspect
         tools/model_inspect/model_inspect.cpp)

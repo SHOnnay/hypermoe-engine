@@ -8,6 +8,12 @@
 
 namespace hypermoe::validation {
 
+bool CpuCudaComparisonReport::matches() const noexcept {
+    return expertSelectionMatches && routerLogits.matches && routingScores.matches &&
+           gateProjection.matches && upProjection.matches && activation.matches &&
+           gated.matches && finalOutput.matches;
+}
+
 NumericalTolerance CorrectnessOracle::toleranceFor(tensor::DType dtype) noexcept {
     switch (dtype) {
     case tensor::DType::FP32: return {1.0e-5F, 1.0e-5F};
@@ -49,7 +55,25 @@ router::RouterDecision CorrectnessOracle::route(
     std::span<const float> weights,
     const router::RouterConfig& config) {
     config.validate();
-    auto scores = routerLogits(hidden, weights, config.expertCount);
+    return selectFromLogits(layerId,
+                            routerLogits(hidden, weights, config.expertCount),
+                            config);
+}
+
+router::RouterDecision CorrectnessOracle::selectFromLogits(
+    LayerId layerId,
+    std::span<const float> logits,
+    const router::RouterConfig& config) {
+    config.validate();
+    if (logits.size() != config.expertCount) {
+        throw std::invalid_argument("oracle logits do not match router expert count");
+    }
+    std::vector<float> scores(logits.begin(), logits.end());
+    if (std::any_of(scores.begin(), scores.end(), [](float score) {
+            return !std::isfinite(score);
+        })) {
+        throw std::invalid_argument("oracle logits must be finite");
+    }
     if (config.normalization == router::RoutingNormalization::Softmax) {
         const auto maximum = *std::max_element(scores.begin(), scores.end());
         double sum{};
@@ -173,6 +197,34 @@ ExpertOracleTrace CorrectnessOracle::expertMlpTrace(
         }
     }
     return trace;
+}
+
+CpuCudaComparisonReport CorrectnessOracle::compareCpuCuda(
+    std::span<const float> cpuRouterLogits,
+    std::span<const float> cudaRouterLogits,
+    const router::RouterDecision& cpuRouting,
+    const router::RouterDecision& cudaRouting,
+    const ExpertOracleTrace& cpuTrace,
+    const ExpertOracleTrace& cudaTrace,
+    tensor::DType executionDType) {
+    if (cpuRouting.layerId != cudaRouting.layerId) {
+        throw std::invalid_argument("CPU/CUDA routing layers do not match");
+    }
+    const auto tolerance = toleranceFor(executionDType);
+    CpuCudaComparisonReport report;
+    report.expertSelectionMatches =
+        cpuRouting.selectedExpertIds == cudaRouting.selectedExpertIds;
+    report.routerLogits = compare(cpuRouterLogits, cudaRouterLogits, tolerance);
+    report.routingScores = compare(cpuRouting.routingScores,
+                                   cudaRouting.routingScores, tolerance);
+    report.gateProjection = compare(cpuTrace.gateProjection,
+                                    cudaTrace.gateProjection, tolerance);
+    report.upProjection = compare(cpuTrace.upProjection,
+                                  cudaTrace.upProjection, tolerance);
+    report.activation = compare(cpuTrace.activation, cudaTrace.activation, tolerance);
+    report.gated = compare(cpuTrace.gated, cudaTrace.gated, tolerance);
+    report.finalOutput = compare(cpuTrace.output, cudaTrace.output, tolerance);
+    return report;
 }
 
 } // namespace hypermoe::validation

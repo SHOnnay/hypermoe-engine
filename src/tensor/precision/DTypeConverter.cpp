@@ -1,6 +1,7 @@
 #include "tensor/precision/DTypeConverter.hpp"
 
 #include "tensor/backend/TensorBackend.hpp"
+#include "tensor/backend/CpuTensorBackend.hpp"
 
 #include <bit>
 #include <cmath>
@@ -33,6 +34,25 @@ float bf16ToFloat(std::uint16_t value) noexcept {
 }
 
 } // namespace
+
+PrecisionExecutionPlan DTypeConverter::selectExecutionPlan(
+    DType storageType, Device executionDevice) {
+    if (executionDevice.ordinal < 0 ||
+        (executionDevice.type == DeviceType::CPU && executionDevice.ordinal != 0)) {
+        throw std::invalid_argument("precision plan execution device is invalid");
+    }
+    switch (storageType) {
+    case DType::FP32:
+        return {storageType, DType::FP32, executionDevice, false, true};
+    case DType::FP16:
+    case DType::BF16:
+        return {storageType, DType::FP32, executionDevice, true, false};
+    case DType::INT8:
+        throw std::invalid_argument(
+            "INT8 execution requires an explicit quantization policy");
+    }
+    throw std::invalid_argument("unsupported storage dtype");
+}
 
 std::vector<float> DTypeConverter::toFp32(
     std::span<const std::byte> source, DType sourceType) {
@@ -74,20 +94,45 @@ std::vector<float> DTypeConverter::toFp32(
 Tensor DTypeConverter::toFp32Tensor(
     TensorView source, TensorBackend& destinationBackend) {
     [[maybe_unused]] const auto owner = source.lockOwner();
-    if (!owner || !source || !source.isContiguous() ||
-        source.device() != Device::cpu() ||
-        destinationBackend.device() != Device::cpu()) {
+    if (!owner || !source || !source.isContiguous()) {
         throw std::invalid_argument(
-            "reference dtype conversion requires a live contiguous CPU tensor");
+            "reference dtype conversion requires a live contiguous tensor");
+    }
+    const auto plan = selectExecutionPlan(source.dtype(), destinationBackend.device());
+    if (source.device().type == DeviceType::CUDA &&
+        source.device() != destinationBackend.device()) {
+        throw std::invalid_argument(
+            "CUDA dtype conversion requires its source backend as destination backend");
+    }
+
+    CpuTensorBackend cpu;
+    Tensor hostSource;
+    TensorView conversionSource = source;
+    if (source.device().type == DeviceType::CUDA) {
+        if (!destinationBackend.available()) {
+            throw std::invalid_argument("CUDA dtype conversion backend is unavailable");
+        }
+        hostSource = cpu.allocateTensor(source.shape(), source.dtype());
+        destinationBackend.copyTensor(source, hostSource);
+        conversionSource = hostSource.view();
     }
     const auto bytes = std::span<const std::byte>(
-        static_cast<const std::byte*>(source.data()), source.bytes());
+        static_cast<const std::byte*>(conversionSource.data()),
+        conversionSource.bytes());
     auto values = toFp32(bytes, source.dtype());
     if (values.size() != source.shape().elementCount()) {
         throw std::invalid_argument("dtype conversion shape does not match storage");
     }
-    auto output = destinationBackend.allocateTensor(source.shape(), DType::FP32);
-    std::memcpy(output.data(), values.data(), values.size() * sizeof(float));
+    if (destinationBackend.device() == Device::cpu()) {
+        auto output = destinationBackend.allocateTensor(source.shape(),
+                                                        plan.executionDType);
+        std::memcpy(output.data(), values.data(), values.size() * sizeof(float));
+        return output;
+    }
+    auto hostOutput = cpu.allocateTensor(source.shape(), plan.executionDType);
+    std::memcpy(hostOutput.data(), values.data(), values.size() * sizeof(float));
+    auto output = destinationBackend.allocateTensor(source.shape(), plan.executionDType);
+    destinationBackend.copyTensor(hostOutput, output);
     return output;
 }
 

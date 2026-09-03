@@ -1,4 +1,4 @@
-# Design decisions through Phase 10
+# Design decisions through Phase 11
 
 ## Why memory mapping
 
@@ -416,3 +416,42 @@ residual ownership, not guess Qwen attention metadata. The placeholder is a
 checked identity copy with an unambiguous name and contract. Replacing it later
 with normalization, attention, KV-cache, and positional encoding cannot silently
 change the router/scheduler/expert interfaces validated here.
+
+## Why CUDA validation is a first-class report
+
+Compile-time CUDA discovery does not prove that a driver, compatible device,
+usable VRAM, streams, or events work at runtime. Phase 11 validates each of those
+capabilities before executing or benchmarking experts. `PASSED`, `FAILED`, and
+`SKIPPED` are distinct so CPU-only builds remain healthy while a broken CUDA
+installation on a claimed GPU host cannot be mistaken for an intentional fallback.
+
+The report is reusable by tests and benchmarks and records the exact device and
+software versions. Performance numbers are emitted only after validation passes;
+HyperMoE does not substitute theoretical RTX 4070 or PCIe specifications.
+
+## Why FP32 remains the CUDA correctness baseline
+
+cuBLAS SGEMM gives the CPU and CUDA paths a shared, well-understood arithmetic
+contract before native lower precision changes accumulation and rounding. The
+oracle compares logits, selected experts, projections, activation, gated values,
+and final output, making a layout or intermediate defect visible instead of only
+checking a possibly compensating final result.
+
+FP16/BF16 storage already has a device-aware conversion plan, but Phase 11 stages
+only selected values through the CPU converter and uploads FP32. This is slower
+than native execution and is intentionally measured as such. Native cuBLAS
+FP16/BF16 types should be enabled only after the target RTX 4070 produces a stable
+FP32 baseline.
+
+## Why a residency lease spans CUDA synchronization
+
+An asynchronous copy or cuBLAS call may retain a raw device pointer after the CPU
+submission function returns. Shared pointer ownership alone keeps bytes allocated
+but does not keep the expert's logical residency state coherent. The manager lease
+therefore covers projection view creation, all queued operations, and backend
+synchronization. Eviction rejects a nonzero lease count and proceeds only after
+the executor has synchronized and released it.
+
+This is deliberately conservative. Later event-backed leases can release without
+blocking the host, but only after their completion ordering is proven on the
+target GPU.

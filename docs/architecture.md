@@ -1,4 +1,4 @@
-# HyperMoE architecture through Phase 10
+# HyperMoE architecture through Phase 11
 
 The runtime separates durable storage, movement, residency, eviction policy,
 hardware access, and measurement so future model adapters do not own memory
@@ -83,6 +83,25 @@ HF shard index → SafeTensorShardManager → global tensor index
  identity attention placeholder → MoE runtime → residual output
 ```
 
+Phase 11 validates the NVIDIA backend without changing model or scheduling
+contracts:
+
+```text
+validated manifest + expert index
+              │ active/prefetch request
+              ▼
+ Scheduler → TransferManager → PinnedBuffer → CUDA transfer stream
+              │ completed event
+              ▼
+ CudaMemoryPool DeviceBuffer → ExpertResidencyLease → TensorView slices
+              │
+              ▼
+ CudaTensorBackend → cuBLAS FP32 projections → synchronized output
+              │
+              ▼
+ stage-by-stage CPU/CUDA CorrectnessOracle report
+```
+
 ## Components
 
 - `ExpertIndex` parses a versioned, fixed-width little-endian format and builds
@@ -117,6 +136,9 @@ HF shard index → SafeTensorShardManager → global tensor index
   live VRAM information, owns created streams/events, and shuts them down after
   synchronization. With CUDA disabled it remains queryable and reports
   unavailable without including CUDA headers in public interfaces.
+- `CudaDeviceInfo` provides the explicit CUDA hardware record while preserving
+  the earlier `DeviceInfo` API alias. `CudaRuntimeValidator` checks properties,
+  VRAM, versions, three streams, and timed events and exports a structured report.
 - `CudaStreamManager` owns persistent compute, transfer, and prefetch streams.
   Transfer workers select transfer or prefetch by request priority instead of
   creating a stream for every expert.
@@ -175,8 +197,9 @@ HF shard index → SafeTensorShardManager → global tensor index
   metadata, and resolves checked tensor-relative range reads.
 - `CheckpointValidator` proves that imported tensor locations and metadata still
   match the source checkpoint without reading full payloads.
-- `DTypeConverter` expands selected FP16/BF16 weights to FP32 for reference CPU
-  execution. Storage dtype remains unchanged in the packed model.
+- `DTypeConverter` selects an explicit execution plan and expands selected
+  FP16/BF16 weights to FP32 on CPU or through a CUDA host-staging path. Storage
+  dtype remains unchanged in the packed model.
 - `QuantizationPolicy` records validated INT8/Q4/Q8 scale, zero-point, and group
   metadata without implying an optimized kernel.
 - `TransformerLayer` and `MoELayer` add the orchestration boundary for identity
@@ -189,8 +212,9 @@ HF shard index → SafeTensorShardManager → global tensor index
   slices. Runtime readers validate all references before use.
 - `ExpertPacker` range-reads those slices, explicitly transposes declared layouts,
   and creates the three-file runtime store without interpreting Qwen names.
-- `CorrectnessOracle` independently computes router and gated-MLP references and
-  applies dtype-specific comparison tolerances.
+- `CorrectnessOracle` independently computes router and gated-MLP references,
+  selects top-k from externally computed logits, and reports CPU/CUDA numerical
+  differences for every execution stage.
 - Batch routing returns one decision per token plus groups of token indices and
   scores for each selected expert, preparing grouped expert dispatch.
 - `TransitionDatabase` keeps statistics per inference stream so tokens in a batch
@@ -238,7 +262,7 @@ addition to tier-independent events.
 ## Deferred intentionally
 
 - GGUF readers and DeepSeek/GLM/Kimi/Mixtral artifact importers
-- CUDA router execution, token generation, attention, and KV cache
+- Native CUDA router execution, token generation, attention, and KV cache
 - Direct-storage integrations and unbuffered platform-specific NVMe benchmarks
 - Grouped expert execution and measured compute/transfer overlap
 - Automatic scheduler-driven capacity selection and eviction policy execution

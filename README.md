@@ -1,10 +1,10 @@
 # HyperMoE Engine
 
 HyperMoE is a C++20 inference-runtime project for hierarchical Mixture-of-Experts
-memory management across VRAM, pinned RAM, ordinary RAM, and NVMe. Phase 10 adds
-Hugging Face multi-shard checkpoint validation, FP16/BF16-to-FP32 reference
-execution, quantization policy metadata, and a minimal residual MoE transformer
-layer over the real artifact path. There is intentionally no
+memory management across VRAM, pinned RAM, ordinary RAM, and NVMe. Phase 11 adds
+structured CUDA runtime validation, real-artifact GPU expert execution tests,
+device-aware FP16/BF16 staging, CPU/CUDA numerical comparison, and an NVIDIA
+hardware benchmark. There is intentionally no
 complete transformer inference, tokenizer, server, or custom CUDA kernel.
 
 ## Build and run
@@ -32,6 +32,7 @@ ctest --test-dir build --output-on-failure
   real_expert_report.json
 ./build/hypermoe_model_validation_benchmark /path/to/qwen-artifact \
   model_validation_report.json
+./build/hypermoe_cuda_runtime_benchmark cuda_runtime_report.json
 ```
 
 Enable runtime memory checks with:
@@ -253,3 +254,23 @@ path. Quantized INT8/Q4/Q8 policies are representable but not executable.
 See [checkpoint validation](docs/components/checkpoint-validation.md),
 [precision runtime](docs/components/precision-runtime.md), and
 [transformer runtime](docs/components/transformer-runtime.md).
+
+## NVIDIA execution validation
+
+`CudaRuntimeValidator` verifies the selected device, compute capability, live
+VRAM, CUDA runtime/driver versions, the three runtime streams, and event timing.
+It emits a structured `PASSED`, `FAILED`, or `SKIPPED` report. A missing toolkit
+or device therefore never produces invented GPU performance numbers.
+
+The Phase 11 real-expert test imports and packs a format-correct Qwen3 MoE
+SafeTensors artifact, routes a token, transfers the selected expert through
+pinned memory into pooled VRAM, and executes its FP32 projections with cuBLAS.
+The independent oracle compares router logits, top-k selection, projections,
+activation, gating, and final output at `1e-5` tolerance. An active residency
+lease prevents eviction until device synchronization completes.
+
+FP16/BF16 CUDA storage currently uses an explicit selected-tensor conversion to
+the FP32 correctness baseline. Native low-precision GEMM, quantized kernels, and
+CUDA elementwise kernels remain deferred. See [CUDA runtime](docs/components/cuda-runtime.md),
+[GPU execution](docs/components/gpu-execution.md), and
+[hardware validation](docs/components/hardware-validation.md).

@@ -30,6 +30,19 @@ struct ExpertOracleTrace {
     std::vector<float> output;
 };
 
+struct CpuCudaComparisonReport {
+    bool expertSelectionMatches{};
+    ComparisonResult routerLogits;
+    ComparisonResult routingScores;
+    ComparisonResult gateProjection;
+    ComparisonResult upProjection;
+    ComparisonResult activation;
+    ComparisonResult gated;
+    ComparisonResult finalOutput;
+
+    [[nodiscard]] bool matches() const noexcept;
+};
+
 class CorrectnessOracle {
 public:
     [[nodiscard]] static NumericalTolerance toleranceFor(tensor::DType dtype) noexcept;
@@ -47,6 +60,10 @@ public:
         std::span<const float> hidden,
         std::span<const float> inputOutputWeights,
         std::size_t expertCount);
+    [[nodiscard]] static router::RouterDecision selectFromLogits(
+        LayerId layerId,
+        std::span<const float> logits,
+        const router::RouterConfig& config);
 
     [[nodiscard]] static std::vector<float> expertMlp(
         std::span<const float> input,
@@ -64,6 +81,14 @@ public:
         std::span<const float> upInputOutput,
         std::span<const float> downInputOutput,
         std::size_t intermediateSize);
+    [[nodiscard]] static CpuCudaComparisonReport compareCpuCuda(
+        std::span<const float> cpuRouterLogits,
+        std::span<const float> cudaRouterLogits,
+        const router::RouterDecision& cpuRouting,
+        const router::RouterDecision& cudaRouting,
+        const ExpertOracleTrace& cpuTrace,
+        const ExpertOracleTrace& cudaTrace,
+        tensor::DType executionDType = tensor::DType::FP32);
 };
 
 } // namespace hypermoe::validation

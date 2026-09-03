@@ -425,6 +425,55 @@ void ExpertManager::adoptDeviceWeights(
     policy_->onAccess(managed.policyId);
 }
 
+void ExpertManager::adoptHostWeights(
+    LayerId layerId,
+    ExpertId id,
+    std::shared_ptr<const std::vector<std::byte>> buffer) {
+    if (!buffer || buffer->empty()) {
+        throw std::invalid_argument("adopted host expert buffer is unavailable");
+    }
+    std::scoped_lock lock(mutex_);
+    auto& managed = requireExpertLocked(layerId, id);
+    if (buffer->size() != managed.metadata.sizeBytes) {
+        throw std::invalid_argument(
+            "adopted host expert buffer size does not match metadata");
+    }
+    if (managed.residencyLeases->load(std::memory_order_acquire) != 0) {
+        throw std::logic_error(
+            "cannot adopt host expert weights while a residency lease is active");
+    }
+    if (managed.metadata.location == MemoryTier::Ram) {
+        if (managed.weights != buffer) {
+            throw std::logic_error("expert already owns a different host buffer");
+        }
+        policy_->onAccess(managed.policyId);
+        return;
+    }
+
+    makeRoomLocked(MemoryTier::Ram, managed.metadata.sizeBytes,
+                   {managed.policyId});
+    auto allocation = memory_.allocate(
+        MemoryTier::Ram, managed.metadata.sizeBytes,
+        "expert:" + std::to_string(layerId) + ":" + std::to_string(id));
+    if (!allocation) {
+        throw std::runtime_error("failed reserving adopted expert host memory");
+    }
+    if (managed.allocation && !memory_.release(managed.allocation->id)) {
+        (void)memory_.release(allocation->id);
+        throw std::logic_error("expert owns an unknown source allocation");
+    }
+    if (managed.metadata.location == MemoryTier::Vram) ++stats_.vramEvictions;
+    if (managed.metadata.location != MemoryTier::Nvme) {
+        policy_->onEvict(managed.policyId, managed.metadata.location);
+    }
+    managed.allocation = std::move(allocation);
+    managed.weights = std::move(buffer);
+    managed.deviceWeights.reset();
+    managed.metadata.location = MemoryTier::Ram;
+    policy_->onResident(managed.policyId, MemoryTier::Ram);
+    policy_->onAccess(managed.policyId);
+}
+
 ExpertResidencyLease ExpertManager::acquireResidentExpert(
     LayerId layerId, ExpertId id) {
     std::scoped_lock lock(mutex_);
