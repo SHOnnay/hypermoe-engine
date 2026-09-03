@@ -63,49 +63,86 @@ public:
 
     void registerExpert(Expert expert);
     [[nodiscard]] ExpertRequestResult requestExpert(ExpertId id);
+    [[nodiscard]] ExpertRequestResult requestExpert(LayerId layerId, ExpertId id);
     void moveExpert(ExpertId id, MemoryTier destination);
+    void moveExpert(LayerId layerId, ExpertId id, MemoryTier destination);
     [[nodiscard]] std::size_t evictUntilWithin(MemoryTier tier,
                                                std::size_t maximumUsedBytes);
 
     [[nodiscard]] std::optional<Expert> findExpert(ExpertId id) const;
+    [[nodiscard]] std::optional<Expert> findExpert(LayerId layerId, ExpertId id) const;
     [[nodiscard]] std::shared_ptr<const std::vector<std::byte>>
     residentWeights(ExpertId id) const;
+    [[nodiscard]] std::shared_ptr<const std::vector<std::byte>>
+    residentWeights(LayerId layerId, ExpertId id) const;
     [[nodiscard]] std::shared_ptr<backend::DeviceBuffer>
     residentDeviceWeights(ExpertId id) const;
+    [[nodiscard]] std::shared_ptr<backend::DeviceBuffer>
+    residentDeviceWeights(LayerId layerId, ExpertId id) const;
     [[nodiscard]] tensor::Tensor residentDeviceTensor(
         ExpertId id, const tensor::Shape& shape, tensor::DType dtype) const;
+    [[nodiscard]] tensor::Tensor residentDeviceTensor(
+        LayerId layerId,
+        ExpertId id,
+        const tensor::Shape& shape,
+        tensor::DType dtype) const;
     [[nodiscard]] tensor::TensorView residentDeviceTensorView(
         ExpertId id, const tensor::Shape& shape, tensor::DType dtype) const;
+    [[nodiscard]] tensor::TensorView residentDeviceTensorView(
+        LayerId layerId,
+        ExpertId id,
+        const tensor::Shape& shape,
+        tensor::DType dtype) const;
     [[nodiscard]] tensor::quantization::QuantizedTensor residentQuantizedTensor(
         ExpertId id,
         const tensor::Shape& shape,
         tensor::quantization::QuantizedDType dtype,
         tensor::quantization::QuantizationParameters parameters) const;
+    [[nodiscard]] tensor::quantization::QuantizedTensor residentQuantizedTensor(
+        LayerId layerId,
+        ExpertId id,
+        const tensor::Shape& shape,
+        tensor::quantization::QuantizedDType dtype,
+        tensor::quantization::QuantizationParameters parameters) const;
+    void adoptDeviceWeights(LayerId layerId,
+                            ExpertId id,
+                            std::shared_ptr<backend::DeviceBuffer> buffer);
     [[nodiscard]] std::size_t expertCount() const;
     [[nodiscard]] ExpertManagerStats stats() const;
 
 private:
     struct ManagedExpert {
         Expert metadata;
+        ExpertId policyId{};
         std::optional<MemoryAllocation> allocation;
         std::shared_ptr<const std::vector<std::byte>> weights;
         std::shared_ptr<backend::DeviceBuffer> deviceWeights;
     };
 
-    void moveExpertLocked(ExpertId id,
+    using ExpertKey = std::uint64_t;
+    [[nodiscard]] static constexpr ExpertKey key(LayerId layerId,
+                                                  ExpertId id) noexcept {
+        return (static_cast<ExpertKey>(layerId) << 32U) | id;
+    }
+    void moveExpertLocked(LayerId layerId,
+                          ExpertId id,
                           MemoryTier destination,
                           const std::unordered_set<ExpertId>& pinned);
     void makeRoomLocked(MemoryTier tier,
                         std::size_t requiredBytes,
                         const std::unordered_set<ExpertId>& pinned);
     [[nodiscard]] std::vector<ExpertId> candidatesLocked(MemoryTier tier) const;
-    [[nodiscard]] ManagedExpert& requireExpertLocked(ExpertId id);
+    [[nodiscard]] ManagedExpert& requireExpertLocked(LayerId layerId, ExpertId id);
+    [[nodiscard]] LayerId resolveLegacyLayer(ExpertId id) const;
 
     MemoryManager& memory_;
     std::unique_ptr<CachePolicy> policy_;
     std::shared_ptr<TransferManager> transfers_;
     mutable std::mutex mutex_;
-    std::unordered_map<ExpertId, ManagedExpert> experts_;
+    std::unordered_map<ExpertKey, ManagedExpert> experts_;
+    std::unordered_map<ExpertId, ExpertKey> policyExperts_;
+    std::unordered_map<ExpertId, std::vector<ExpertKey>> legacyExperts_;
+    std::uint64_t nextPolicyId_{};
     ExpertManagerStats stats_;
 };
 

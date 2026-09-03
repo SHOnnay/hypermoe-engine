@@ -1,10 +1,11 @@
 # HyperMoE Engine
 
 HyperMoE is a C++20 inference-runtime project for hierarchical Mixture-of-Experts
-memory management across VRAM, pinned RAM, ordinary RAM, and NVMe. Phase 6 adds a
-model-independent gated expert MLP above the CPU/optional CUDA tensor runtime,
-with non-owning tensor views, checked INT8/Q4 descriptors, SiLU/GELU activation,
-zero-copy resident-weight slicing, and execution-level profiling.
+memory management across VRAM, pinned RAM, ordinary RAM, and NVMe. Phase 7 adds a
+model-agnostic adapter and routing layer above the expert runtime: neutral model
+metadata, generic expert projection mappings, deterministic configurable top-k
+routing, scheduler/executor coordination, inspection tooling, and prediction
+history hooks.
 There is intentionally no transformer inference, model adapter, or custom CUDA
 kernel implementation yet.
 
@@ -23,6 +24,8 @@ ctest --test-dir build --output-on-failure
 ./build/hypermoe_cuda_benchmark --report=cuda_report.json
 ./build/hypermoe_tensor_benchmark --report=tensor_report.json
 ./build/hypermoe_expert_benchmark --report=expert_report.json
+./build/hypermoe_router_benchmark --tokens=100000 --report=router_report.json
+./build/hypermoe_model_inspect /path/to/model/metadata.json
 ```
 
 Enable runtime memory checks with:
@@ -162,3 +165,28 @@ reason when cuBLAS or an NVIDIA device is unavailable.
 The expert benchmark measures real expert-store loading, zero-copy tensor-view
 preparation, projection GEMMs, activation, and total MLP execution. CPU and CUDA
 results are reported separately, with an explicit CUDA skip reason when needed.
+
+## Model adapters and routing
+
+`ModelAdapter` translates external metadata into `ModelMetadata`, capability
+flags, `RouterConfig`, and `ExpertWeightMap`. The generic runtime uses only those
+contracts; it never branches on `ModelArchitecture` or parses tensor names.
+`QwenMoEAdapter` is the first validation adapter and contains all recognition of
+Qwen-style `gate_proj`, `up_proj`, `down_proj`, and router tensor names.
+
+The current adapter input is the documented
+`hypermoe.model-manifest.v1` JSON schema. This is an inspection/validation
+manifest, not a claim that native Qwen checkpoints use this format. Native GGUF,
+SafeTensors, or other metadata readers must inspect their real metadata and feed
+the same adapter contracts.
+
+`CpuRouterBackend` calculates router logits for one hidden state, optionally
+applies stable softmax, selects deterministic top-k experts, and optionally
+renormalizes the selected scores. `MoERuntime` schedules all selected experts,
+adopts completed device buffers into the layered `ExpertManager`, creates
+zero-copy projection views, executes the gated MLP, and combines expert outputs.
+No attention, transformer block, tokenizer, or token generation is included.
+
+See [model adapters](docs/components/model-adapters.md),
+[router](docs/components/router.md), and
+[expert mapping](docs/components/expert-mapping.md) for the extension contracts.

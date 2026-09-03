@@ -1,4 +1,4 @@
-# Design decisions through Phase 6
+# Design decisions through Phase 7
 
 ## Why memory mapping
 
@@ -251,3 +251,64 @@ quantized GEMM. Real model metadata must define group size, scale tensor layout,
 packing order, and any per-channel rules before dequantization or fused kernels
 are added. INT8/Q4 execution, FP16 accumulation, and fused gated kernels remain
 future profiling-driven work.
+
+## Why the core is adapter-driven
+
+Model families disagree on tensor names, expert layout, shared experts, routing
+normalization, and quantization metadata. Encoding any one naming convention in
+the scheduler or executor would turn future integration into conditionals spread
+across memory and compute code. An adapter therefore produces capabilities and a
+neutral metadata graph. Core execution consumes generic `GATE`, `UP`, and `DOWN`
+roles and never examines an architecture enum or source tensor name.
+
+`ModelArchitecture` is diagnostic information for tools and adapter selection.
+Capabilities are the behavioral contract. This lets a future adapter describe a
+feature combination without requiring runtime logic to infer behavior from a
+family label.
+
+## Why the first adapter uses a neutral manifest
+
+Phase 7 has no native checkpoint parser and must not invent one. The Qwen-style
+adapter accepts `hypermoe.model-manifest.v1`, a strict JSON inspection schema with
+explicit shapes, dtypes, offsets, sizes, layer/expert IDs, router settings, and
+tensor names. It cross-checks Qwen-style names against explicit IDs and validates
+complete projection sets. The schema is an adapter validation input, not a claim
+about GGUF, SafeTensors, or upstream Qwen files.
+
+The JSON parser preserves unsigned 64-bit offsets as number text until checked,
+rejects duplicate keys and malformed Unicode, limits file size and nesting, and
+reports byte positions. Native readers can later construct the same
+`ModelMetadata` without changing routing or execution.
+
+## Router and top-k semantics
+
+The reference router computes `hidden × router_weights`, rejects non-finite
+scores, applies stable softmax when configured, and selects any `k` in
+`[1, expert_count]`. Equal scores use ascending expert ID, making tests and
+benchmarks deterministic. Selected scores may be renormalized independently;
+this is configuration rather than a model-family assumption.
+
+The CPU implementation handles one token at a time. A future CUDA backend can
+implement the same `RouterBackend` contract without changing scheduler or model
+code. Batched routing, grouped dispatch, capacity factors, expert masks, and
+auxiliary-loss behavior remain outside this phase.
+
+## Layered identity and scheduler adoption
+
+Expert IDs are normally local to a transformer layer. `ExpertManager` now keys
+ownership by `(layer_id, expert_id)` and assigns an internal cache-policy ID.
+Legacy single-ID calls resolve only unique IDs and fail clearly when ambiguous.
+
+The scheduler already transfers by composite identity. After a successful load,
+`MoERuntime` adopts the returned `DeviceBuffer` into `ExpertManager` with logical
+memory accounting; it does not issue a second disk read. Scheduler `acquire` and
+`release` bracket the zero-copy views used by `ExpertMlpExecutor`.
+
+## Prediction preparation
+
+`ExpertHistory` records selection frequency, transitions from every prior
+selection to every current selection, and the most recent decision. The router
+benchmark exercises this data with a deterministic 100,000-token workload. No
+prediction policy is claimed yet: the next predictor can consume history and
+adapter/router signals through a separate interface and submit ordinary
+prefetch-priority scheduler requests.

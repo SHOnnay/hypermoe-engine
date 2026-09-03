@@ -1,11 +1,14 @@
-# HyperMoE architecture through Phase 6
+# HyperMoE architecture through Phase 7
 
 The runtime separates durable storage, movement, residency, eviction policy,
 hardware access, and measurement so future model adapters do not own memory
 policy.
 
 ```text
-router/model simulation
+model manifest → ModelAdapter → capabilities + neutral metadata
+          │
+          ▼
+ hidden state + router weights → Router → RouterDecision
           │ demand or prediction
           ▼
  Scheduler + residency state machine ◄── RuntimeEvent subscribers
@@ -29,7 +32,10 @@ experts.bin + experts.index
  Tensor owner / non-owning TensorView slices
           │ TensorBackend
           ▼
- gate + up GEMMs → SiLU/GELU → multiply → down GEMM
+ ExpertWeightMap → gate/up GEMMs → activation → down GEMM
+          │ routing-score weighted combination
+          ▼
+    generic MoE layer output
 ```
 
 ## Components
@@ -77,6 +83,9 @@ experts.bin + experts.index
   transfer manager, cold movement owns checked weight bytes. A resident backend
   buffer can be exposed as a tensor only when shape/dtype metadata matches its
   exact stored byte size.
+- `ExpertManager` keys residency by `(layer_id, expert_id)`, allowing model-local
+  expert IDs to repeat across layers. Existing single-ID APIs remain valid only
+  when the registered ID is unambiguous.
 - `Shape` stores dimensions and element strides with checked element-count and
   addressable-span arithmetic. `Tensor` adds dtype, device ordinal, logical byte
   count, backing byte count, pointer, and shared RAII ownership.
@@ -95,6 +104,21 @@ experts.bin + experts.index
   and gated elementwise multiplication without embedding router or transformer
   behavior. CUDA projection uses cuBLAS; activation and multiply currently use
   explicit host staging.
+- `ModelAdapter` converts format-specific metadata into neutral tensors, layers,
+  router configuration, capabilities, and generic expert mappings. Runtime code
+  never parses a tensor name or switches on `ModelArchitecture`.
+- `QwenMoEAdapter` validates the HyperMoE v1 manifest and isolates Qwen-style
+  projection/router name recognition. No checkpoint-native format is inferred.
+- `ExpertWeightMap` maps layer/expert projection roles to tensor metadata and
+  builds checked zero-copy views relative to the loaded expert payload.
+- `CpuRouterBackend` implements FP32 scoring, stable softmax or raw scores,
+  deterministic top-k for arbitrary k, and optional selected-score
+  renormalization. `Router` is the backend/configuration boundary.
+- `MoERuntime` coordinates route → parallel scheduling → buffer adoption → expert
+  execution → routing-weighted combination for one MoE layer. Its current
+  execution lock deliberately serializes layer calls while the contracts mature.
+- `ExpertHistory` records per-layer expert frequency, cross-layer transitions,
+  and the previous selection without implementing a predictor.
 - `CachePolicy` has interchangeable LRU, LFU, and hybrid implementations. The
   hybrid normalizes signals before applying 0.4 frequency, 0.3 recency,
   0.2 layer probability, and 0.1 prefetch confidence.
@@ -131,8 +155,8 @@ addition to tier-independent events.
 
 ## Deferred intentionally
 
-- Model-format parsing and Qwen/GLM/DeepSeek/Kimi adapters
-- Tensor routing, token generation, and KV cache
+- Native checkpoint readers and DeepSeek/GLM/Kimi/Mixtral adapters
+- Batched or CUDA router execution, token generation, attention, and KV cache
 - Direct-storage integrations and unbuffered platform-specific NVMe benchmarks
 - Router-produced probabilities and measured compute/transfer overlap
 - Automatic scheduler-driven capacity selection and eviction policy execution

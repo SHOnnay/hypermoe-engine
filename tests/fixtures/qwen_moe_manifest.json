@@ -1,0 +1,24 @@
+{
+  "schema": "hypermoe.model-manifest.v1",
+  "architecture": "QWEN_MOE",
+  "model_name": "Synthetic Qwen MoE",
+  "layer_count": 1,
+  "expert_count": 2,
+  "hidden_size": 2,
+  "intermediate_size": 2,
+  "router": {
+    "expert_count": 2,
+    "top_k": 2,
+    "normalization": "SOFTMAX",
+    "renormalize_selected": true
+  },
+  "tensors": [
+    {"name": "model.layers.0.mlp.experts.0.gate_proj.weight", "shape": [2, 2], "dtype": "FP32", "offset": 0, "size": 16, "layer_id": 0, "expert_id": 0},
+    {"name": "model.layers.0.mlp.experts.0.up_proj.weight", "shape": [2, 2], "dtype": "FP32", "offset": 16, "size": 16, "layer_id": 0, "expert_id": 0},
+    {"name": "model.layers.0.mlp.experts.0.down_proj.weight", "shape": [2, 2], "dtype": "FP32", "offset": 32, "size": 16, "layer_id": 0, "expert_id": 0},
+    {"name": "model.layers.0.mlp.experts.1.gate_proj.weight", "shape": [2, 2], "dtype": "FP32", "offset": 48, "size": 16, "layer_id": 0, "expert_id": 1},
+    {"name": "model.layers.0.mlp.experts.1.up_proj.weight", "shape": [2, 2], "dtype": "FP32", "offset": 64, "size": 16, "layer_id": 0, "expert_id": 1},
+    {"name": "model.layers.0.mlp.experts.1.down_proj.weight", "shape": [2, 2], "dtype": "FP32", "offset": 80, "size": 16, "layer_id": 0, "expert_id": 1},
+    {"name": "model.layers.0.mlp.gate.weight", "shape": [2, 2], "dtype": "FP32", "offset": 96, "size": 16, "layer_id": 0, "expert_id": null}
+  ]
+}

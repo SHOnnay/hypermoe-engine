@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(HyperMoE VERSION 0.6.0 LANGUAGES CXX)
+project(HyperMoE VERSION 0.7.0 LANGUAGES CXX)
 
 option(HYPERMOE_BUILD_TESTS "Build HyperMoE tests" ON)
 option(HYPERMOE_BUILD_BENCHMARKS "Build HyperMoE simulation benchmarks" ON)
@@ -47,6 +47,14 @@ add_library(hypermoe
     src/tensor/backend/CpuTensorBackend.cpp
     src/tensor/backend/CudaTensorBackend.cpp
     src/experts/ExpertExecutor.cpp
+    src/models/ExpertWeightMap.cpp
+    src/models/metadata/JsonValue.cpp
+    src/models/qwen/QwenMoEAdapter.cpp
+    src/router/RouterConfig.cpp
+    src/router/Router.cpp
+    src/router/CpuRouterBackend.cpp
+    src/prediction/ExpertHistory.cpp
+    src/core/runtime/MoERuntime.cpp
 )
 add_library(HyperMoE::hypermoe ALIAS hypermoe)
 
@@ -113,6 +121,10 @@ if(HYPERMOE_BUILD_TESTS)
     add_executable(hypermoe_phase6_tests tests/phase6_tests.cpp)
     target_link_libraries(hypermoe_phase6_tests PRIVATE HyperMoE::hypermoe)
     add_test(NAME hypermoe_phase6 COMMAND hypermoe_phase6_tests)
+
+    add_executable(hypermoe_phase7_tests tests/phase7_tests.cpp)
+    target_link_libraries(hypermoe_phase7_tests PRIVATE HyperMoE::hypermoe)
+    add_test(NAME hypermoe_phase7 COMMAND hypermoe_phase7_tests)
 endif()
 
 if(HYPERMOE_BUILD_BENCHMARKS)
@@ -141,4 +153,12 @@ if(HYPERMOE_BUILD_BENCHMARKS)
     add_executable(hypermoe_expert_benchmark
         benchmarks/expert/expert_benchmark.cpp)
     target_link_libraries(hypermoe_expert_benchmark PRIVATE HyperMoE::hypermoe)
+
+    add_executable(hypermoe_router_benchmark
+        benchmarks/router/router_benchmark.cpp)
+    target_link_libraries(hypermoe_router_benchmark PRIVATE HyperMoE::hypermoe)
+
+    add_executable(hypermoe_model_inspect
+        tools/model_inspect/model_inspect.cpp)
+    target_link_libraries(hypermoe_model_inspect PRIVATE HyperMoE::hypermoe)
 endif()

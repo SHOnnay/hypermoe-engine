@@ -5,7 +5,9 @@
 #include "tensor/TensorView.hpp"
 #include "tensor/quantization/QuantizedTensor.hpp"
 
+#include <algorithm>
 #include <chrono>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -57,31 +59,47 @@ void ExpertManager::registerExpert(Expert expert) {
     }
 
     std::scoped_lock lock(mutex_);
-    if (experts_.contains(expert.id)) {
-        throw std::invalid_argument("duplicate expert id");
+    const auto expertKey = key(expert.layer, expert.id);
+    if (experts_.contains(expertKey)) {
+        throw std::invalid_argument("duplicate layer/expert id");
+    }
+    if (nextPolicyId_ > std::numeric_limits<ExpertId>::max()) {
+        throw std::overflow_error("cache policy expert ID space exhausted");
     }
 
     const auto initialTier = expert.location;
+    const auto policyId = static_cast<ExpertId>(nextPolicyId_++);
     expert.location = MemoryTier::Nvme;
-    experts_.emplace(expert.id,
-                     ManagedExpert{expert, std::nullopt, nullptr, nullptr});
+    experts_.emplace(expertKey,
+                     ManagedExpert{expert, policyId, std::nullopt, nullptr, nullptr});
+    policyExperts_.emplace(policyId, expertKey);
+    legacyExperts_[expert.id].push_back(expertKey);
     if (initialTier != MemoryTier::Nvme) {
         try {
-            moveExpertLocked(expert.id, initialTier, {expert.id});
+            moveExpertLocked(expert.layer, expert.id, initialTier, {policyId});
         } catch (...) {
-            auto& inserted = experts_.at(expert.id);
+            auto& inserted = experts_.at(expertKey);
             if (inserted.allocation) {
                 (void)memory_.release(inserted.allocation->id);
             }
-            experts_.erase(expert.id);
+            experts_.erase(expertKey);
+            policyExperts_.erase(policyId);
+            auto& legacy = legacyExperts_.at(expert.id);
+            legacy.erase(std::remove(legacy.begin(), legacy.end(), expertKey),
+                         legacy.end());
+            if (legacy.empty()) legacyExperts_.erase(expert.id);
             throw;
         }
     }
 }
 
 ExpertRequestResult ExpertManager::requestExpert(ExpertId id) {
+    return requestExpert(resolveLegacyLayer(id), id);
+}
+
+ExpertRequestResult ExpertManager::requestExpert(LayerId layerId, ExpertId id) {
     std::scoped_lock lock(mutex_);
-    auto& managed = requireExpertLocked(id);
+    auto& managed = requireExpertLocked(layerId, id);
     const auto sourceTier = managed.metadata.location;
     const auto size = managed.metadata.sizeBytes;
     const auto start = std::chrono::steady_clock::now();
@@ -96,13 +114,13 @@ ExpertRequestResult ExpertManager::requestExpert(ExpertId id) {
         result.simulatedLatencyMs = nvmeLatency(size) + pcieLatency(size);
     }
 
-    moveExpertLocked(id, MemoryTier::Vram, {id});
+    moveExpertLocked(layerId, id, MemoryTier::Vram, {managed.policyId});
     if (transfers_ && sourceTier != MemoryTier::Vram) {
         result.simulatedLatencyMs =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start)
                 .count();
     }
-    policy_->onAccess(id);
+    policy_->onAccess(managed.policyId);
     ++stats_.requests;
     if (result.source == RequestSource::VramHit) {
         ++stats_.vramHits;
@@ -113,13 +131,20 @@ ExpertRequestResult ExpertManager::requestExpert(ExpertId id) {
         stats_.nvmeBytesRead += size;
     }
     stats_.simulatedLoadingLatencyMs += result.simulatedLatencyMs;
-    result.expert = requireExpertLocked(id).metadata;
+    result.expert = requireExpertLocked(layerId, id).metadata;
     return result;
 }
 
 void ExpertManager::moveExpert(ExpertId id, MemoryTier destination) {
+    moveExpert(resolveLegacyLayer(id), id, destination);
+}
+
+void ExpertManager::moveExpert(LayerId layerId,
+                               ExpertId id,
+                               MemoryTier destination) {
     std::scoped_lock lock(mutex_);
-    moveExpertLocked(id, destination, {id});
+    auto& managed = requireExpertLocked(layerId, id);
+    moveExpertLocked(layerId, id, destination, {managed.policyId});
 }
 
 std::size_t ExpertManager::evictUntilWithin(MemoryTier tier,
@@ -136,14 +161,22 @@ std::size_t ExpertManager::evictUntilWithin(MemoryTier tier,
         if (!victim) {
             break;
         }
+        const auto identity = policyExperts_.find(*victim);
+        if (identity == policyExperts_.end()) {
+            throw std::logic_error("cache policy selected an unknown expert");
+        }
+        const auto& victimExpert = experts_.at(identity->second).metadata;
         if (tier == MemoryTier::Vram) {
             try {
-                moveExpertLocked(*victim, MemoryTier::Ram, {*victim});
+                moveExpertLocked(victimExpert.layer, victimExpert.id,
+                                 MemoryTier::Ram, {*victim});
             } catch (const std::runtime_error&) {
-                moveExpertLocked(*victim, MemoryTier::Nvme, {*victim});
+                moveExpertLocked(victimExpert.layer, victimExpert.id,
+                                 MemoryTier::Nvme, {*victim});
             }
         } else {
-            moveExpertLocked(*victim, MemoryTier::Nvme, {*victim});
+            moveExpertLocked(victimExpert.layer, victimExpert.id,
+                             MemoryTier::Nvme, {*victim});
         }
         ++evicted;
     }
@@ -151,8 +184,16 @@ std::size_t ExpertManager::evictUntilWithin(MemoryTier tier,
 }
 
 std::optional<Expert> ExpertManager::findExpert(ExpertId id) const {
+    try {
+        return findExpert(resolveLegacyLayer(id), id);
+    } catch (const std::out_of_range&) {
+        return std::nullopt;
+    }
+}
+
+std::optional<Expert> ExpertManager::findExpert(LayerId layerId, ExpertId id) const {
     std::scoped_lock lock(mutex_);
-    const auto it = experts_.find(id);
+    const auto it = experts_.find(key(layerId, id));
     if (it == experts_.end()) {
         return std::nullopt;
     }
@@ -161,8 +202,13 @@ std::optional<Expert> ExpertManager::findExpert(ExpertId id) const {
 
 std::shared_ptr<const std::vector<std::byte>>
 ExpertManager::residentWeights(ExpertId id) const {
+    return residentWeights(resolveLegacyLayer(id), id);
+}
+
+std::shared_ptr<const std::vector<std::byte>>
+ExpertManager::residentWeights(LayerId layerId, ExpertId id) const {
     std::scoped_lock lock(mutex_);
-    const auto it = experts_.find(id);
+    const auto it = experts_.find(key(layerId, id));
     if (it == experts_.end()) {
         throw std::out_of_range("unknown expert id");
     }
@@ -171,8 +217,13 @@ ExpertManager::residentWeights(ExpertId id) const {
 
 std::shared_ptr<backend::DeviceBuffer>
 ExpertManager::residentDeviceWeights(ExpertId id) const {
+    return residentDeviceWeights(resolveLegacyLayer(id), id);
+}
+
+std::shared_ptr<backend::DeviceBuffer>
+ExpertManager::residentDeviceWeights(LayerId layerId, ExpertId id) const {
     std::scoped_lock lock(mutex_);
-    const auto it = experts_.find(id);
+    const auto it = experts_.find(key(layerId, id));
     if (it == experts_.end()) {
         throw std::out_of_range("unknown expert id");
     }
@@ -181,8 +232,16 @@ ExpertManager::residentDeviceWeights(ExpertId id) const {
 
 tensor::Tensor ExpertManager::residentDeviceTensor(
     ExpertId id, const tensor::Shape& shape, tensor::DType dtype) const {
+    return residentDeviceTensor(resolveLegacyLayer(id), id, shape, dtype);
+}
+
+tensor::Tensor ExpertManager::residentDeviceTensor(
+    LayerId layerId,
+    ExpertId id,
+    const tensor::Shape& shape,
+    tensor::DType dtype) const {
     std::scoped_lock lock(mutex_);
-    const auto it = experts_.find(id);
+    const auto it = experts_.find(key(layerId, id));
     if (it == experts_.end()) throw std::out_of_range("unknown expert id");
     const auto& managed = it->second;
     if (managed.metadata.location != MemoryTier::Vram || !managed.deviceWeights) {
@@ -203,8 +262,16 @@ tensor::Tensor ExpertManager::residentDeviceTensor(
 
 tensor::TensorView ExpertManager::residentDeviceTensorView(
     ExpertId id, const tensor::Shape& shape, tensor::DType dtype) const {
+    return residentDeviceTensorView(resolveLegacyLayer(id), id, shape, dtype);
+}
+
+tensor::TensorView ExpertManager::residentDeviceTensorView(
+    LayerId layerId,
+    ExpertId id,
+    const tensor::Shape& shape,
+    tensor::DType dtype) const {
     std::scoped_lock lock(mutex_);
-    const auto it = experts_.find(id);
+    const auto it = experts_.find(key(layerId, id));
     if (it == experts_.end()) throw std::out_of_range("unknown expert id");
     const auto& managed = it->second;
     if (managed.metadata.location != MemoryTier::Vram || !managed.deviceWeights) {
@@ -228,8 +295,18 @@ tensor::quantization::QuantizedTensor ExpertManager::residentQuantizedTensor(
     const tensor::Shape& shape,
     tensor::quantization::QuantizedDType dtype,
     tensor::quantization::QuantizationParameters parameters) const {
+    return residentQuantizedTensor(resolveLegacyLayer(id), id, shape, dtype,
+                                   parameters);
+}
+
+tensor::quantization::QuantizedTensor ExpertManager::residentQuantizedTensor(
+    LayerId layerId,
+    ExpertId id,
+    const tensor::Shape& shape,
+    tensor::quantization::QuantizedDType dtype,
+    tensor::quantization::QuantizationParameters parameters) const {
     std::scoped_lock lock(mutex_);
-    const auto it = experts_.find(id);
+    const auto it = experts_.find(key(layerId, id));
     if (it == experts_.end()) throw std::out_of_range("unknown expert id");
     const auto& managed = it->second;
     if (managed.metadata.location != MemoryTier::Vram || !managed.deviceWeights) {
@@ -256,6 +333,48 @@ tensor::quantization::QuantizedTensor ExpertManager::residentQuantizedTensor(
         shape, dtype, parameters, device, buffer);
 }
 
+void ExpertManager::adoptDeviceWeights(
+    LayerId layerId,
+    ExpertId id,
+    std::shared_ptr<backend::DeviceBuffer> buffer) {
+    if (!buffer || !*buffer || !buffer->backend() ||
+        !buffer->backend()->isAvailable()) {
+        throw std::invalid_argument("adopted expert buffer is unavailable");
+    }
+    std::scoped_lock lock(mutex_);
+    auto& managed = requireExpertLocked(layerId, id);
+    if (buffer->size() != managed.metadata.sizeBytes) {
+        throw std::invalid_argument("adopted expert buffer size does not match metadata");
+    }
+    if (managed.metadata.location == MemoryTier::Vram) {
+        if (managed.deviceWeights != buffer) {
+            throw std::logic_error("expert already owns a different device buffer");
+        }
+        policy_->onAccess(managed.policyId);
+        return;
+    }
+
+    makeRoomLocked(MemoryTier::Vram, managed.metadata.sizeBytes,
+                   {managed.policyId});
+    auto allocation = memory_.allocate(
+        MemoryTier::Vram, managed.metadata.sizeBytes,
+        "expert:" + std::to_string(layerId) + ":" + std::to_string(id));
+    if (!allocation) throw std::runtime_error("failed reserving adopted expert memory");
+    if (managed.allocation && !memory_.release(managed.allocation->id)) {
+        (void)memory_.release(allocation->id);
+        throw std::logic_error("expert owns an unknown source allocation");
+    }
+    if (managed.metadata.location != MemoryTier::Nvme) {
+        policy_->onEvict(managed.policyId, managed.metadata.location);
+    }
+    managed.allocation = std::move(allocation);
+    managed.weights.reset();
+    managed.deviceWeights = std::move(buffer);
+    managed.metadata.location = MemoryTier::Vram;
+    policy_->onResident(managed.policyId, MemoryTier::Vram);
+    policy_->onAccess(managed.policyId);
+}
+
 std::size_t ExpertManager::expertCount() const {
     std::scoped_lock lock(mutex_);
     return experts_.size();
@@ -266,10 +385,11 @@ ExpertManagerStats ExpertManager::stats() const {
     return stats_;
 }
 
-void ExpertManager::moveExpertLocked(ExpertId id,
+void ExpertManager::moveExpertLocked(LayerId layerId,
+                                     ExpertId id,
                                      MemoryTier destination,
                                      const std::unordered_set<ExpertId>& pinned) {
-    auto& managed = requireExpertLocked(id);
+    auto& managed = requireExpertLocked(layerId, id);
     const auto source = managed.metadata.location;
     if (source == destination) {
         return;
@@ -278,8 +398,8 @@ void ExpertManager::moveExpertLocked(ExpertId id,
     // All cold loads stage through RAM; the DiskStore implementation will make
     // this an actual asynchronous range read in Phase 2.
     if (source == MemoryTier::Nvme && destination == MemoryTier::Vram) {
-        moveExpertLocked(id, MemoryTier::Ram, pinned);
-        moveExpertLocked(id, MemoryTier::Vram, pinned);
+        moveExpertLocked(layerId, id, MemoryTier::Ram, pinned);
+        moveExpertLocked(layerId, id, MemoryTier::Vram, pinned);
         return;
     }
 
@@ -292,7 +412,7 @@ void ExpertManager::moveExpertLocked(ExpertId id,
         } else if (source == MemoryTier::Ram) {
             ++stats_.ramEvictions;
         }
-        policy_->onEvict(id, source);
+        policy_->onEvict(managed.policyId, source);
         managed.allocation.reset();
         managed.weights.reset();
         managed.deviceWeights.reset();
@@ -302,7 +422,8 @@ void ExpertManager::moveExpertLocked(ExpertId id,
 
     makeRoomLocked(destination, managed.metadata.sizeBytes, pinned);
     auto allocation = memory_.allocate(
-        destination, managed.metadata.sizeBytes, "expert:" + std::to_string(id));
+        destination, managed.metadata.sizeBytes,
+        "expert:" + std::to_string(layerId) + ":" + std::to_string(id));
     if (!allocation) {
         throw std::runtime_error("memory reservation failed after eviction");
     }
@@ -372,13 +493,13 @@ void ExpertManager::moveExpertLocked(ExpertId id,
         ++stats_.vramEvictions;
     }
     if (source != MemoryTier::Nvme) {
-        policy_->onEvict(id, source);
+        policy_->onEvict(managed.policyId, source);
     }
     managed.allocation = std::move(allocation);
     managed.weights = std::move(destinationWeights);
     managed.deviceWeights = std::move(destinationDeviceWeights);
     managed.metadata.location = destination;
-    policy_->onResident(id, destination);
+    policy_->onResident(managed.policyId, destination);
 }
 
 void ExpertManager::makeRoomLocked(MemoryTier tier,
@@ -400,14 +521,22 @@ void ExpertManager::makeRoomLocked(MemoryTier tier,
 
         auto nextPinned = pinned;
         nextPinned.insert(*victim);
+        const auto identity = policyExperts_.find(*victim);
+        if (identity == policyExperts_.end()) {
+            throw std::logic_error("cache policy selected an unknown expert");
+        }
+        const auto& victimExpert = experts_.at(identity->second).metadata;
         if (tier == MemoryTier::Vram) {
             try {
-                moveExpertLocked(*victim, MemoryTier::Ram, nextPinned);
+                moveExpertLocked(victimExpert.layer, victimExpert.id,
+                                 MemoryTier::Ram, nextPinned);
             } catch (const std::runtime_error&) {
-                moveExpertLocked(*victim, MemoryTier::Nvme, nextPinned);
+                moveExpertLocked(victimExpert.layer, victimExpert.id,
+                                 MemoryTier::Nvme, nextPinned);
             }
         } else {
-            moveExpertLocked(*victim, MemoryTier::Nvme, nextPinned);
+            moveExpertLocked(victimExpert.layer, victimExpert.id,
+                             MemoryTier::Nvme, nextPinned);
         }
     }
 }
@@ -415,20 +544,35 @@ void ExpertManager::makeRoomLocked(MemoryTier tier,
 std::vector<ExpertId> ExpertManager::candidatesLocked(MemoryTier tier) const {
     std::vector<ExpertId> candidates;
     candidates.reserve(experts_.size());
-    for (const auto& [id, expert] : experts_) {
+    for (const auto& [expertKey, expert] : experts_) {
+        (void)expertKey;
         if (expert.metadata.location == tier) {
-            candidates.push_back(id);
+            candidates.push_back(expert.policyId);
         }
     }
     return candidates;
 }
 
-ExpertManager::ManagedExpert& ExpertManager::requireExpertLocked(ExpertId id) {
-    const auto it = experts_.find(id);
+ExpertManager::ManagedExpert& ExpertManager::requireExpertLocked(LayerId layerId,
+                                                                 ExpertId id) {
+    const auto it = experts_.find(key(layerId, id));
     if (it == experts_.end()) {
         throw std::out_of_range("unknown expert id");
     }
     return it->second;
+}
+
+LayerId ExpertManager::resolveLegacyLayer(ExpertId id) const {
+    std::scoped_lock lock(mutex_);
+    const auto found = legacyExperts_.find(id);
+    if (found == legacyExperts_.end() || found->second.empty()) {
+        throw std::out_of_range("unknown expert id");
+    }
+    if (found->second.size() != 1) {
+        throw std::logic_error(
+            "expert id is ambiguous across layers; use the layer-aware API");
+    }
+    return experts_.at(found->second.front()).metadata.layer;
 }
 
 } // namespace hypermoe
