@@ -1,4 +1,4 @@
-# Design decisions through Phase 8
+# Design decisions through Phase 10
 
 ## Why memory mapping
 
@@ -336,9 +336,9 @@ while current Qwen3 MoE implementations can store a three-dimensional fused
 logical expert mapping. Slices retain `OUTPUT_INPUT` orientation because source
 linear weights are not silently transposed during metadata import.
 
-Supporting BF16 in metadata does not imply BF16 execution. The distinction lets
-inspection describe real artifacts accurately while backends continue to reject
-unsupported math paths.
+Phase 8's BF16 metadata support did not initially imply execution. Phase 10 keeps
+that distinction explicit while adding selected-projection expansion to FP32 on
+the CPU reference backend; native BF16 arithmetic remains unsupported.
 
 ## Why prediction is statistical first
 
@@ -389,5 +389,30 @@ boundary for future asynchronous CUDA work as well as current CPU execution.
 Reusing tensor matmul or router code in expected-value generation would allow the
 same layout or offset defect to pass twice. The oracle therefore uses scalar
 loops and its own routing/top-k implementation. FP32 is the executed Phase 9
-path; FP16, BF16, and INT8 tolerances are recorded now as validation policy, not
-as claims that those execution paths exist.
+path. Phase 10 uses the FP16/BF16 tolerance policy for FP32 reference execution
+from compact storage; INT8 remains metadata-only.
+
+## Why shard indexing is separate from model import
+
+SafeTensors shard discovery is format infrastructure, while Qwen expert-name
+interpretation is adapter logic. `SafeTensorShardManager` therefore owns files,
+global names, Hugging Face weight-map agreement, and range reads. The Qwen
+importer consumes its neutral tensor list. `CheckpointValidator` independently
+compares the resulting manifest to the same source index, catching accidental
+offset, dtype, shape, or shard drift.
+
+## Why reference execution expands precision per expert
+
+Converting a complete BF16 checkpoint to FP32 would defeat hierarchical memory
+management. Phase 10 preserves compact source and packed bytes, then expands only
+the selected expert projections under a residency lease. CPU arithmetic remains
+FP32 for a stable correctness baseline. Native FP16/BF16 CUDA execution is
+deferred until RTX 4070 validation can compare it against this path.
+
+## Why attention remains an explicit placeholder
+
+The first transformer boundary is intended to validate MoE orchestration and
+residual ownership, not guess Qwen attention metadata. The placeholder is a
+checked identity copy with an unambiguous name and contract. Replacing it later
+with normalization, attention, KV-cache, and positional encoding cannot silently
+change the router/scheduler/expert interfaces validated here.

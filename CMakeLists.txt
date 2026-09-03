@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(HyperMoE VERSION 0.9.0 LANGUAGES CXX)
+project(HyperMoE VERSION 0.10.0 LANGUAGES CXX)
 
 option(HYPERMOE_BUILD_TESTS "Build HyperMoE tests" ON)
 option(HYPERMOE_BUILD_BENCHMARKS "Build HyperMoE simulation benchmarks" ON)
@@ -52,6 +52,8 @@ add_library(hypermoe
     src/models/metadata/JsonValue.cpp
     src/models/qwen/QwenMoEAdapter.cpp
     src/importer/SafeTensors.cpp
+    src/importer/SafeTensorShardManager.cpp
+    src/importer/validation/CheckpointValidator.cpp
     src/importer/qwen/QwenImporter.cpp
     src/router/RouterConfig.cpp
     src/router/Router.cpp
@@ -60,6 +62,9 @@ add_library(hypermoe
     src/prediction/TransitionDatabase.cpp
     src/prediction/ExpertPredictor.cpp
     src/core/runtime/MoERuntime.cpp
+    src/tensor/precision/DTypeConverter.cpp
+    src/tensor/quantization/QuantizationPolicy.cpp
+    src/transformer/MoELayer.cpp
     tools/model_convert/WeightConverter.cpp
     tools/model_convert/ExpertPacker.cpp
     src/validation/CorrectnessOracle.cpp
@@ -142,6 +147,10 @@ if(HYPERMOE_BUILD_TESTS)
     add_executable(hypermoe_phase9_tests tests/phase9_tests.cpp)
     target_link_libraries(hypermoe_phase9_tests PRIVATE HyperMoE::hypermoe)
     add_test(NAME hypermoe_phase9 COMMAND hypermoe_phase9_tests)
+
+    add_executable(hypermoe_phase10_tests tests/real_moe_layer_tests.cpp)
+    target_link_libraries(hypermoe_phase10_tests PRIVATE HyperMoE::hypermoe)
+    add_test(NAME hypermoe_phase10 COMMAND hypermoe_phase10_tests)
 endif()
 
 if(HYPERMOE_BUILD_BENCHMARKS)
@@ -182,6 +191,10 @@ if(HYPERMOE_BUILD_BENCHMARKS)
     add_executable(hypermoe_real_expert_benchmark
         benchmarks/real_expert/real_expert_benchmark.cpp)
     target_link_libraries(hypermoe_real_expert_benchmark PRIVATE HyperMoE::hypermoe)
+
+    add_executable(hypermoe_model_validation_benchmark
+        benchmarks/model_validation/model_validation_benchmark.cpp)
+    target_link_libraries(hypermoe_model_validation_benchmark PRIVATE HyperMoE::hypermoe)
 
     add_executable(hypermoe_model_inspect
         tools/model_inspect/model_inspect.cpp)

@@ -18,6 +18,7 @@ hypermoe_model/
   manifest.json
   experts.bin
   experts.index
+  conversion_report.json
 ```
 
 Index v2 keeps the Phase 2 32-byte expert records intact and appends fixed-width
@@ -39,3 +40,7 @@ The current converter handles uncompressed FP32, FP16, BF16, and INT8 matrix
 bytes described by the manifest. INT8 metadata can be packed, but quantized
 expert execution still requires scale/group metadata and is intentionally
 rejected by the executor.
+
+The conversion report records layer, expert, projection, shard, source tensor,
+parameter, byte, and dtype counts. Conversion completes only after reopening the
+output store and validating every whole-expert and projection checksum.

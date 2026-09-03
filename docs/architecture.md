@@ -1,4 +1,4 @@
-# HyperMoE architecture through Phase 9
+# HyperMoE architecture through Phase 10
 
 The runtime separates durable storage, movement, residency, eviction policy,
 hardware access, and measurement so future model adapters do not own memory
@@ -63,6 +63,24 @@ Qwen SafeTensors → QwenImporter → source ModelManifest
                                    │
                                    ▼
                          ExpertMlpExecutor
+```
+
+The Phase 10 model-compatible path adds shard and precision boundaries:
+
+```text
+HF shard index → SafeTensorShardManager → global tensor index
+                         │
+                         ▼
+                 CheckpointValidator
+                         │ exact manifest/source agreement
+                         ▼
+ packed FP32/FP16/BF16 expert → residency lease → TensorView
+                         │ selected projections only
+                         ▼
+              DTypeConverter → FP32 reference execution
+                         │
+                         ▼
+ identity attention placeholder → MoE runtime → residual output
 ```
 
 ## Components
@@ -151,8 +169,18 @@ Qwen SafeTensors → QwenImporter → source ModelManifest
 - `ExpertHistory` records per-layer expert frequency, cross-layer transitions,
   and the previous selection for profiling and predictor integration.
 - `SafeTensors` inspects bounded JSON headers and validates tensor ranges against
-  every shard without reading weight payloads. BF16 metadata is representable
-  even though BF16 execution remains deferred.
+  every shard without reading weight payloads. BF16 storage is representable and
+  selected CPU projections can now be expanded to FP32 reference execution.
+- `SafeTensorShardManager` validates Hugging Face weight maps, aggregates shard
+  metadata, and resolves checked tensor-relative range reads.
+- `CheckpointValidator` proves that imported tensor locations and metadata still
+  match the source checkpoint without reading full payloads.
+- `DTypeConverter` expands selected FP16/BF16 weights to FP32 for reference CPU
+  execution. Storage dtype remains unchanged in the packed model.
+- `QuantizationPolicy` records validated INT8/Q4/Q8 scale, zero-point, and group
+  metadata without implying an optimized kernel.
+- `TransformerLayer` and `MoELayer` add the orchestration boundary for identity
+  attention, real MoE dispatch, and residual output.
 - `ModelImporter` is the architecture-independent artifact boundary.
   `QwenImporter` alone interprets Qwen configuration keys and tensor names,
   including individual Qwen2 projections and fused Qwen3 expert storage.

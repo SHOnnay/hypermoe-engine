@@ -4,7 +4,9 @@
 #include "hypermoe/experts/expert_manager.hpp"
 #include "tensor/backend/CpuTensorBackend.hpp"
 #include "tensor/backend/TensorBackend.hpp"
+#include "tensor/precision/DTypeConverter.hpp"
 
+#include <array>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -131,9 +133,24 @@ LayerExecutionResult MoERuntime::executeLayer(
                 tensor::Shape{expert->sizeBytes}, tensor::DType::INT8);
             const auto weights = weightMap_.createViews(
                 layerId, expertId, payload, payloadOffsets[index]);
+            std::array<tensor::Tensor, 3> converted;
+            ExpertMlpWeights executionWeights = weights;
+            const auto prepare = [&](tensor::TensorView source,
+                                     tensor::Tensor& owner) {
+                if (source.dtype() == tensor::DType::FP32) return source;
+                owner = tensor::precision::DTypeConverter::toFp32Tensor(
+                    source, *tensorBackend_);
+                return owner.view();
+            };
+            executionWeights.gateProjection =
+                prepare(weights.gateProjection, converted[0]);
+            executionWeights.upProjection =
+                prepare(weights.upProjection, converted[1]);
+            executionWeights.downProjection =
+                prepare(weights.downProjection, converted[2]);
             auto expertOutput =
                 tensorBackend_->allocateTensor(outputShape, tensor::DType::FP32);
-            executor_->execute(hiddenState, weights, expertOutput);
+            executor_->execute(hiddenState, executionWeights, expertOutput);
 
             auto scale = tensorBackend_->allocateTensor(outputShape, tensor::DType::FP32);
             fillAndCopy(*tensorBackend_, scale, decision.routingScores[index]);

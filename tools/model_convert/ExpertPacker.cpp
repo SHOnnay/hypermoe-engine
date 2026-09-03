@@ -1,6 +1,7 @@
 #include "tools/model_convert/ExpertPacker.hpp"
 
 #include "hypermoe/experts/expert.hpp"
+#include "importer/validation/CheckpointValidator.hpp"
 #include "storage/ExpertIndex.hpp"
 #include "storage/ExpertStore.hpp"
 #include "tools/model_convert/WeightConverter.hpp"
@@ -9,6 +10,7 @@
 #include <array>
 #include <fstream>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 
@@ -64,10 +66,37 @@ std::array<std::uint64_t, 4> shapeArray(const tensor::Shape& shape) {
 
 } // namespace
 
+std::string PackingReport::toJson() const {
+    std::ostringstream output;
+    output << "{\n  \"schema\": \"hypermoe.conversion-report.v1\",\n"
+           << "  \"layers\": " << layers << ",\n"
+           << "  \"experts\": " << experts << ",\n"
+           << "  \"projections\": " << projections << ",\n"
+           << "  \"source_tensors\": " << sourceTensors << ",\n"
+           << "  \"parameters_indexed\": " << parametersIndexed << ",\n"
+           << "  \"bytes_read\": " << bytesRead << ",\n"
+           << "  \"bytes_written\": " << bytesWritten << ",\n"
+           << "  \"shards\": " << shardCount << ",\n"
+           << "  \"validation_passed\": "
+           << (validationPassed ? "true" : "false") << ",\n"
+           << "  \"dtype_tensors\": {";
+    bool first = true;
+    for (const auto& [dtype, count] : dtypeTensors) {
+        if (!first) output << ',';
+        output << "\n    \"" << dtype << "\": " << count;
+        first = false;
+    }
+    if (!dtypeTensors.empty()) output << '\n' << "  ";
+    output << "}\n}\n";
+    return output.str();
+}
+
 PackingReport ExpertPacker::pack(const models::ModelManifest& sourceManifest,
                                  const std::filesystem::path& artifactRoot,
                                  const std::filesystem::path& outputDirectory) const {
     sourceManifest.validate();
+    const auto checkpoint = importer::validation::CheckpointValidator::validate(
+        artifactRoot, sourceManifest);
     if (std::filesystem::exists(outputDirectory)) {
         throw storage::StorageError("refusing to overwrite model conversion output");
     }
@@ -84,6 +113,18 @@ PackingReport ExpertPacker::pack(const models::ModelManifest& sourceManifest,
         std::vector<storage::ExpertRecord> experts;
         std::vector<storage::ProjectionRecord> projections;
         PackingReport report;
+        report.layers = sourceManifest.config.layerCount;
+        report.sourceTensors = sourceManifest.tensors.size();
+        report.shardCount = checkpoint.shardCount;
+        for (const auto& sourceTensor : sourceManifest.tensors) {
+            if (report.parametersIndexed >
+                std::numeric_limits<std::uint64_t>::max() -
+                    sourceTensor.shape.elementCount()) {
+                throw storage::StorageError("conversion parameter count overflow");
+            }
+            report.parametersIndexed += sourceTensor.shape.elementCount();
+            ++report.dtypeTensors[std::string(tensor::toString(sourceTensor.dtype))];
+        }
         std::uint64_t cursor{};
         const std::array<char, alignment> zeros{};
 
@@ -197,6 +238,26 @@ PackingReport ExpertPacker::pack(const models::ModelManifest& sourceManifest,
         packed.validate();
         packed.save(outputDirectory / "manifest.json");
         report.bytesWritten = cursor;
+        {
+            storage::ExpertStore verification(outputDirectory);
+            for (const auto& record : verification.index().records()) {
+                (void)verification.mappedExpert(record.layer_id, record.expert_id, true);
+            }
+            for (const auto& projection : verification.index().projections()) {
+                (void)verification.mappedProjection(
+                    projection.layer_id, projection.expert_id,
+                    projection.projection_type, true);
+            }
+        }
+        report.validationPassed = true;
+        std::ofstream reportFile(outputDirectory / "conversion_report.json",
+                                 std::ios::binary | std::ios::trunc);
+        const auto reportJson = report.toJson();
+        reportFile.write(reportJson.data(),
+                         static_cast<std::streamsize>(reportJson.size()));
+        if (!reportFile) {
+            throw storage::StorageError("failed writing conversion report");
+        }
         return report;
     } catch (...) {
         std::error_code error;

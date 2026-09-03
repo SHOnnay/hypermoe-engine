@@ -1,5 +1,7 @@
 #include "importer/SafeTensors.hpp"
 
+#include "importer/SafeTensorShardManager.hpp"
+
 #include "models/metadata/JsonValue.hpp"
 
 #include <algorithm>
@@ -131,42 +133,8 @@ std::vector<models::ManifestTensor> SafeTensors::inspectFile(
 
 std::vector<models::ManifestTensor> SafeTensors::inspectArtifact(
     const std::filesystem::path& artifact) {
-    std::error_code error;
-    const auto canonical = std::filesystem::canonical(artifact, error);
-    if (error) throw models::metadata::MetadataError("model artifact does not exist");
-    const bool singleFile = std::filesystem::is_regular_file(canonical);
-    const auto root = singleFile ? canonical.parent_path() : canonical;
-    std::vector<std::filesystem::path> files;
-    if (singleFile) {
-        if (canonical.extension() != ".safetensors") {
-            throw models::metadata::MetadataError("artifact file is not SafeTensors");
-        }
-        files.push_back(canonical);
-    } else {
-        for (const auto& entry : std::filesystem::directory_iterator(root)) {
-            if (entry.is_regular_file() && entry.path().extension() == ".safetensors") {
-                files.push_back(entry.path());
-            }
-        }
-    }
-    if (files.empty()) throw models::metadata::MetadataError("no SafeTensors shards found");
-    std::sort(files.begin(), files.end());
-    std::vector<models::ManifestTensor> result;
-    std::set<std::string> names;
-    for (const auto& file : files) {
-        auto shard = inspectFile(file, root);
-        for (auto& tensor : shard) {
-            if (!names.insert(tensor.name).second) {
-                throw models::metadata::MetadataError(
-                    "duplicate tensor name across SafeTensors shards");
-            }
-            result.push_back(std::move(tensor));
-        }
-    }
-    std::sort(result.begin(), result.end(), [](const auto& left, const auto& right) {
-        return left.name < right.name;
-    });
-    return result;
+    const SafeTensorShardManager shards(artifact);
+    return {shards.tensors().begin(), shards.tensors().end()};
 }
 
 } // namespace hypermoe::importer

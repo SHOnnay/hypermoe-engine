@@ -11,7 +11,8 @@ std::size_t storageSizeBytes(const Shape& shape, QuantizedDType dtype) {
     }
     const auto elements = shape.elementCount();
     switch (dtype) {
-    case QuantizedDType::INT8: return elements;
+    case QuantizedDType::INT8:
+    case QuantizedDType::Q8: return elements;
     case QuantizedDType::Q4: return elements / 2 + elements % 2;
     }
     throw std::invalid_argument("unsupported quantized dtype");
@@ -24,8 +25,9 @@ void validateParameters(QuantizedDType dtype,
     }
     switch (dtype) {
     case QuantizedDType::INT8:
+    case QuantizedDType::Q8:
         if (parameters.zeroPoint < -128 || parameters.zeroPoint > 127) {
-            throw std::invalid_argument("INT8 zero point is outside [-128, 127]");
+            throw std::invalid_argument("8-bit zero point is outside [-128, 127]");
         }
         return;
     case QuantizedDType::Q4:

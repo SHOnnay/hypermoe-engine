@@ -1,10 +1,10 @@
 # HyperMoE Engine
 
 HyperMoE is a C++20 inference-runtime project for hierarchical Mixture-of-Experts
-memory management across VRAM, pinned RAM, ordinary RAM, and NVMe. Phase 9 adds
-the first real Qwen-style artifact-to-expert path: SafeTensors validation, offline
-expert packing, layout conversion, projection-aware indexing, residency leases,
-and CPU output comparison against an independent oracle. There is intentionally no
+memory management across VRAM, pinned RAM, ordinary RAM, and NVMe. Phase 10 adds
+Hugging Face multi-shard checkpoint validation, FP16/BF16-to-FP32 reference
+execution, quantization policy metadata, and a minimal residual MoE transformer
+layer over the real artifact path. There is intentionally no
 complete transformer inference, tokenizer, server, or custom CUDA kernel.
 
 ## Build and run
@@ -30,6 +30,8 @@ ctest --test-dir build --output-on-failure
 ./build/hypermoe_model_convert /path/to/qwen-artifact hypermoe_model
 ./build/hypermoe_real_expert_benchmark /path/to/qwen-artifact \
   real_expert_report.json
+./build/hypermoe_model_validation_benchmark /path/to/qwen-artifact \
+  model_validation_report.json
 ```
 
 Enable runtime memory checks with:
@@ -234,3 +236,20 @@ top-k, routing scores, and one FP32 expert output to an independent scalar oracl
 See [model conversion](docs/components/model-conversion.md),
 [real execution](docs/components/real-execution.md), and
 [correctness validation](docs/components/correctness-validation.md).
+
+## Real-model compatibility and precision
+
+`SafeTensorShardManager` validates `model.safetensors.index.json`, aggregates all
+declared shards into one O(1) tensor lookup, and performs checked range reads from
+the resolved file. `CheckpointValidator` compares imported manifest locations,
+shapes, dtypes, expert mappings, and router mappings back to source metadata
+without loading full tensors.
+
+Packed FP16 and BF16 experts are converted projection-by-projection to FP32 by
+the CPU reference runtime. `MoELayer` adds a validated identity attention
+placeholder and residual connection around the existing router/scheduler/expert
+path. Quantized INT8/Q4/Q8 policies are representable but not executable.
+
+See [checkpoint validation](docs/components/checkpoint-validation.md),
+[precision runtime](docs/components/precision-runtime.md), and
+[transformer runtime](docs/components/transformer-runtime.md).

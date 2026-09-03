@@ -11,6 +11,7 @@ namespace hypermoe::tensor::quantization {
 enum class QuantizedDType : std::uint32_t {
     INT8 = 1,
     Q4 = 2,
+    Q8 = 3,
 };
 
 struct QuantizationParameters {
@@ -22,6 +23,7 @@ struct QuantizationParameters {
     switch (dtype) {
     case QuantizedDType::INT8: return "INT8";
     case QuantizedDType::Q4: return "Q4";
+    case QuantizedDType::Q8: return "Q8";
     }
     return "UNKNOWN";
 }

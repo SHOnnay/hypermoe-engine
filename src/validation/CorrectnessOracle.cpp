@@ -49,24 +49,7 @@ router::RouterDecision CorrectnessOracle::route(
     std::span<const float> weights,
     const router::RouterConfig& config) {
     config.validate();
-    if (hidden.empty() ||
-        config.expertCount > std::numeric_limits<std::size_t>::max() /
-                                 hidden.size() ||
-        weights.size() != hidden.size() * config.expertCount) {
-        throw std::invalid_argument("oracle router matrix has invalid dimensions");
-    }
-    std::vector<float> scores(config.expertCount);
-        for (std::size_t expert = 0; expert < config.expertCount; ++expert) {
-        double score{};
-        for (std::size_t feature = 0; feature < hidden.size(); ++feature) {
-            score += static_cast<double>(hidden[feature]) *
-                     weights[feature * config.expertCount + expert];
-        }
-        scores[expert] = static_cast<float>(score);
-        if (!std::isfinite(scores[expert])) {
-            throw std::runtime_error("oracle router produced a non-finite score");
-        }
-    }
+    auto scores = routerLogits(hidden, weights, config.expertCount);
     if (config.normalization == router::RoutingNormalization::Softmax) {
         const auto maximum = *std::max_element(scores.begin(), scores.end());
         double sum{};
@@ -100,7 +83,43 @@ router::RouterDecision CorrectnessOracle::route(
     return decision;
 }
 
+std::vector<float> CorrectnessOracle::routerLogits(
+    std::span<const float> hidden,
+    std::span<const float> weights,
+    std::size_t expertCount) {
+    if (hidden.empty() || expertCount == 0 ||
+        expertCount > std::numeric_limits<std::size_t>::max() / hidden.size() ||
+        weights.size() != hidden.size() * expertCount) {
+        throw std::invalid_argument("oracle router matrix has invalid dimensions");
+    }
+    std::vector<float> scores(expertCount);
+    for (std::size_t expert = 0; expert < expertCount; ++expert) {
+        double score{};
+        for (std::size_t feature = 0; feature < hidden.size(); ++feature) {
+            score += static_cast<double>(hidden[feature]) *
+                     weights[feature * expertCount + expert];
+        }
+        scores[expert] = static_cast<float>(score);
+        if (!std::isfinite(scores[expert])) {
+            throw std::runtime_error("oracle router produced a non-finite score");
+        }
+    }
+    return scores;
+}
+
 std::vector<float> CorrectnessOracle::expertMlp(
+    std::span<const float> input,
+    std::size_t tokens,
+    std::size_t hiddenSize,
+    std::span<const float> gate,
+    std::span<const float> up,
+    std::span<const float> down,
+    std::size_t intermediateSize) {
+    return expertMlpTrace(input, tokens, hiddenSize, gate, up, down,
+                          intermediateSize).output;
+}
+
+ExpertOracleTrace CorrectnessOracle::expertMlpTrace(
     std::span<const float> input,
     std::size_t tokens,
     std::size_t hiddenSize,
@@ -121,9 +140,13 @@ std::vector<float> CorrectnessOracle::expertMlp(
         down.size() != product(intermediateSize, hiddenSize)) {
         throw std::invalid_argument("oracle expert matrices have invalid dimensions");
     }
-    std::vector<float> output(tokens * hiddenSize, 0.0F);
+    ExpertOracleTrace trace;
+    trace.gateProjection.resize(tokens * intermediateSize);
+    trace.upProjection.resize(tokens * intermediateSize);
+    trace.activation.resize(tokens * intermediateSize);
+    trace.gated.resize(tokens * intermediateSize);
+    trace.output.assign(tokens * hiddenSize, 0.0F);
     for (std::size_t token = 0; token < tokens; ++token) {
-        std::vector<float> gated(intermediateSize);
         for (std::size_t intermediate = 0; intermediate < intermediateSize; ++intermediate) {
             double gateValue{};
             double upValue{};
@@ -134,18 +157,22 @@ std::vector<float> CorrectnessOracle::expertMlp(
             }
             const auto gateFloat = static_cast<float>(gateValue);
             const auto silu = gateFloat / (1.0F + std::exp(-gateFloat));
-            gated[intermediate] = silu * static_cast<float>(upValue);
+            const auto position = token * intermediateSize + intermediate;
+            trace.gateProjection[position] = gateFloat;
+            trace.upProjection[position] = static_cast<float>(upValue);
+            trace.activation[position] = silu;
+            trace.gated[position] = silu * static_cast<float>(upValue);
         }
         for (std::size_t hidden = 0; hidden < hiddenSize; ++hidden) {
             double value{};
             for (std::size_t intermediate = 0; intermediate < intermediateSize; ++intermediate) {
-                value += gated[intermediate] *
+                value += trace.gated[token * intermediateSize + intermediate] *
                          down[intermediate * hiddenSize + hidden];
             }
-            output[token * hiddenSize + hidden] = static_cast<float>(value);
+            trace.output[token * hiddenSize + hidden] = static_cast<float>(value);
         }
     }
-    return output;
+    return trace;
 }
 
 } // namespace hypermoe::validation

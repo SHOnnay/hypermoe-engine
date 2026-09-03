@@ -22,6 +22,14 @@ struct ComparisonResult {
     float maximumRelativeError{};
 };
 
+struct ExpertOracleTrace {
+    std::vector<float> gateProjection;
+    std::vector<float> upProjection;
+    std::vector<float> activation;
+    std::vector<float> gated;
+    std::vector<float> output;
+};
+
 class CorrectnessOracle {
 public:
     [[nodiscard]] static NumericalTolerance toleranceFor(tensor::DType dtype) noexcept;
@@ -35,8 +43,20 @@ public:
         std::span<const float> hidden,
         std::span<const float> inputOutputWeights,
         const router::RouterConfig& config);
+    [[nodiscard]] static std::vector<float> routerLogits(
+        std::span<const float> hidden,
+        std::span<const float> inputOutputWeights,
+        std::size_t expertCount);
 
     [[nodiscard]] static std::vector<float> expertMlp(
+        std::span<const float> input,
+        std::size_t tokens,
+        std::size_t hiddenSize,
+        std::span<const float> gateInputOutput,
+        std::span<const float> upInputOutput,
+        std::span<const float> downInputOutput,
+        std::size_t intermediateSize);
+    [[nodiscard]] static ExpertOracleTrace expertMlpTrace(
         std::span<const float> input,
         std::size_t tokens,
         std::size_t hiddenSize,

@@ -24,7 +24,11 @@ int main(int argc, char** argv) {
         const auto elapsed = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - start).count();
         std::cout << "Packed " << report.experts << " experts and "
-                  << report.projections << " projections in " << elapsed << " s\n";
+                  << report.projections << " projections across " << report.layers
+                  << " layers (" << report.parametersIndexed << " indexed parameters, "
+                  << report.shardCount << " shard(s), validation "
+                  << (report.validationPassed ? "passed" : "failed") << ") in "
+                  << elapsed << " s\n";
         return EXIT_SUCCESS;
     } catch (const std::exception& error) {
         std::cerr << "model conversion failed: " << error.what() << '\n';
