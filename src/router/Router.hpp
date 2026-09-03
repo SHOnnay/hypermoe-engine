@@ -14,6 +14,10 @@ public:
     [[nodiscard]] RouterDecision route(LayerId layerId,
                                        tensor::TensorView hiddenState,
                                        tensor::TensorView routerWeights);
+    [[nodiscard]] BatchRouterDecision routeBatch(
+        LayerId layerId,
+        tensor::TensorView hiddenStates,
+        tensor::TensorView routerWeights);
 
 private:
     RouterConfig config_;

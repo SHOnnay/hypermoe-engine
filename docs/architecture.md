@@ -1,14 +1,20 @@
-# HyperMoE architecture through Phase 7
+# HyperMoE architecture through Phase 8
 
 The runtime separates durable storage, movement, residency, eviction policy,
 hardware access, and measurement so future model adapters do not own memory
 policy.
 
 ```text
-model manifest → ModelAdapter → capabilities + neutral metadata
+Qwen config + SafeTensors headers → ModelImporter
+          │ validated physical locations + logical slices
+          ▼
+ HyperMoE v2 manifest → generic runtime metadata
           │
           ▼
- hidden state + router weights → Router → RouterDecision
+ hidden-state batch + router weights → Router → grouped RouterDecision
+          │ observations
+          ▼
+ ExpertHistory → TransitionDatabase → ExpertPredictor
           │ demand or prediction
           ▼
  Scheduler + residency state machine ◄── RuntimeEvent subscribers
@@ -118,7 +124,26 @@ experts.bin + experts.index
   execution → routing-weighted combination for one MoE layer. Its current
   execution lock deliberately serializes layer calls while the contracts mature.
 - `ExpertHistory` records per-layer expert frequency, cross-layer transitions,
-  and the previous selection without implementing a predictor.
+  and the previous selection for profiling and predictor integration.
+- `SafeTensors` inspects bounded JSON headers and validates tensor ranges against
+  every shard without reading weight payloads. BF16 metadata is representable
+  even though BF16 execution remains deferred.
+- `ModelImporter` is the architecture-independent artifact boundary.
+  `QwenImporter` alone interprets Qwen configuration keys and tensor names,
+  including individual Qwen2 projections and fused Qwen3 expert storage.
+- `ModelManifest` v2 records source files, physical tensor byte ranges, router
+  configuration, output/input matrix orientation, and per-expert gate/up/down
+  slices. Runtime readers validate all references before use.
+- Batch routing returns one decision per token plus groups of token indices and
+  scores for each selected expert, preparing grouped expert dispatch.
+- `TransitionDatabase` keeps statistics per inference stream so tokens in a batch
+  do not create false transitions between independent sequences.
+- `ExpertPredictor` uses transition probability, frequency, recency, and
+  co-occurrence. It emits ordinary predicted-next-layer scheduler requests; it is
+  statistical and does not claim model-level learned routing.
+- `Scheduler` retains completed prefetch transfer buffers. A subsequent demand
+  request receives the exact buffer and storage record instead of observing a
+  READY state whose data ownership has expired.
 - `CachePolicy` has interchangeable LRU, LFU, and hybrid implementations. The
   hybrid normalizes signals before applying 0.4 frequency, 0.3 recency,
   0.2 layer probability, and 0.1 prefetch confidence.
@@ -155,10 +180,10 @@ addition to tier-independent events.
 
 ## Deferred intentionally
 
-- Native checkpoint readers and DeepSeek/GLM/Kimi/Mixtral adapters
-- Batched or CUDA router execution, token generation, attention, and KV cache
+- GGUF readers and DeepSeek/GLM/Kimi/Mixtral artifact importers
+- CUDA router execution, token generation, attention, and KV cache
 - Direct-storage integrations and unbuffered platform-specific NVMe benchmarks
-- Router-produced probabilities and measured compute/transfer overlap
+- Grouped expert execution and measured compute/transfer overlap
 - Automatic scheduler-driven capacity selection and eviction policy execution
 - Quantized dequantization/GEMM, batched/strided GEMM, FP16 compute, kernel launch
   policy, and CUDA graphs

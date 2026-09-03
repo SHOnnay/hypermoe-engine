@@ -25,4 +25,14 @@ RouterDecision Router::route(LayerId layerId,
     return backend_->route(layerId, hiddenState, routerWeights, config_);
 }
 
+BatchRouterDecision Router::routeBatch(LayerId layerId,
+                                       tensor::TensorView hiddenStates,
+                                       tensor::TensorView routerWeights) {
+    if (hiddenStates.device() != backend_->device() ||
+        routerWeights.device() != backend_->device()) {
+        throw std::invalid_argument("router tensors do not match router backend device");
+    }
+    return backend_->routeBatch(layerId, hiddenStates, routerWeights, config_);
+}
+
 } // namespace hypermoe::router

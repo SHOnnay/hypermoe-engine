@@ -8,6 +8,7 @@ namespace hypermoe::tensor {
 enum class DType {
     FP32,
     FP16,
+    BF16,
     INT8,
 };
 
@@ -15,6 +16,7 @@ enum class DType {
     switch (dtype) {
     case DType::FP32: return 4;
     case DType::FP16: return 2;
+    case DType::BF16: return 2;
     case DType::INT8: return 1;
     }
     return 0;
@@ -24,6 +26,7 @@ enum class DType {
     switch (dtype) {
     case DType::FP32: return "FP32";
     case DType::FP16: return "FP16";
+    case DType::BF16: return "BF16";
     case DType::INT8: return "INT8";
     }
     return "UNKNOWN";

@@ -43,8 +43,9 @@ and nullable `expert_id`. Offsets are absolute within the associated weight stor
 Dense dtypes are `FP32`, `FP16`, and `INT8`; `Q4` and optional `quantization`
 metadata describe packed storage but are not executable yet.
 
-This manifest is not a native model format. A native GGUF or SafeTensors reader
-must validate actual source metadata, then populate these structures.
+This manifest is not a native model format. Phase 8 adds a native SafeTensors
+header reader and Qwen importer that produce the stricter v2 runtime manifest.
+GGUF remains unsupported.
 
 ## Current adapter
 

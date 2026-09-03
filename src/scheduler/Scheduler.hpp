@@ -150,6 +150,7 @@ private:
     std::condition_variable ready_;
     std::priority_queue<QueueEntry, std::vector<QueueEntry>, HigherPriority> queue_;
     std::unordered_map<ExpertKey, std::shared_ptr<Task>> pendingByExpert_;
+    std::unordered_map<ExpertKey, TransferResult> residentTransfers_;
     std::unordered_set<ExpertKey> prefetchedReady_;
     std::vector<std::thread> workers_;
     std::uint64_t nextSequence_{};

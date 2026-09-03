@@ -1,13 +1,11 @@
 # HyperMoE Engine
 
 HyperMoE is a C++20 inference-runtime project for hierarchical Mixture-of-Experts
-memory management across VRAM, pinned RAM, ordinary RAM, and NVMe. Phase 7 adds a
-model-agnostic adapter and routing layer above the expert runtime: neutral model
-metadata, generic expert projection mappings, deterministic configurable top-k
-routing, scheduler/executor coordination, inspection tooling, and prediction
-history hooks.
-There is intentionally no transformer inference, model adapter, or custom CUDA
-kernel implementation yet.
+memory management across VRAM, pinned RAM, ordinary RAM, and NVMe. Phase 8 adds
+real SafeTensors metadata inspection, Qwen MoE artifact import, a portable
+HyperMoE v2 manifest, batch top-k routing with expert grouping, and a statistical
+expert predictor connected to scheduler prefetching. There is intentionally no
+complete transformer inference, tokenizer, server, or custom CUDA kernel.
 
 ## Build and run
 
@@ -25,7 +23,10 @@ ctest --test-dir build --output-on-failure
 ./build/hypermoe_tensor_benchmark --report=tensor_report.json
 ./build/hypermoe_expert_benchmark --report=expert_report.json
 ./build/hypermoe_router_benchmark --tokens=100000 --report=router_report.json
+./build/hypermoe_end_to_end_benchmark --tokens=10000 \
+  --report=end_to_end_report.json
 ./build/hypermoe_model_inspect /path/to/model/metadata.json
+./build/hypermoe_model_import /path/to/qwen-artifact hypermoe-manifest.json
 ```
 
 Enable runtime memory checks with:
@@ -130,7 +131,7 @@ valid JSON report with zero GPU measurements and an explicit skip reason.
 ## Tensor and expert execution foundation
 
 `Tensor` owns shared RAII storage and its metadata. It records shape,
-element strides, `FP32`/`FP16`/`INT8` dtype, CPU/CUDA device and ordinal, logical
+element strides, `FP32`/`FP16`/`BF16`/`INT8` dtype, CPU/CUDA device and ordinal, logical
 bytes, and backing-storage bytes. Shape and byte multiplication are checked for
 overflow; strided tensors validate their full addressable span. Reshape shares
 storage and currently requires contiguous layouts.
@@ -174,11 +175,11 @@ contracts; it never branches on `ModelArchitecture` or parses tensor names.
 `QwenMoEAdapter` is the first validation adapter and contains all recognition of
 Qwen-style `gate_proj`, `up_proj`, `down_proj`, and router tensor names.
 
-The current adapter input is the documented
+The Phase 7 adapter input is the documented
 `hypermoe.model-manifest.v1` JSON schema. This is an inspection/validation
-manifest, not a claim that native Qwen checkpoints use this format. Native GGUF,
-SafeTensors, or other metadata readers must inspect their real metadata and feed
-the same adapter contracts.
+manifest, not a claim that native Qwen checkpoints use this format. Phase 8's
+Qwen SafeTensors importer now produces the more explicit v2 runtime manifest;
+GGUF remains unsupported.
 
 `CpuRouterBackend` calculates router logits for one hidden state, optionally
 applies stable softmax, selects deterministic top-k experts, and optionally
@@ -190,3 +191,26 @@ No attention, transformer block, tokenizer, or token generation is included.
 See [model adapters](docs/components/model-adapters.md),
 [router](docs/components/router.md), and
 [expert mapping](docs/components/expert-mapping.md) for the extension contracts.
+
+## Real artifact import and prediction
+
+`QwenImporter` reads an upstream Qwen2/Qwen3 MoE `config.json` and one or more
+SafeTensors headers. It does not load tensor payloads. It validates dtype, shape,
+file range, router metadata, and either per-expert projection tensors or Qwen3's
+fused expert tensors, then writes `hypermoe.model-manifest.v2`. The manifest keeps
+physical tensor locations separate from logical gate/up/down slices and records
+the source matrix orientation. Runtime components consume the manifest rather
+than interpreting the original checkpoint.
+
+`Router::routeBatch` routes a rank-2 token batch and returns both per-token top-k
+decisions and expert-grouped token indices. `TransitionDatabase` maintains
+per-stream transitions, frequency, bounded recent selections, and expert
+co-occurrence. `ExpertPredictor` turns those statistics into confidence-ranked
+next-layer requests through the existing scheduler prefetch priority. Completed
+prefetch buffers remain scheduler-owned until demand adopts them.
+
+See [importer](docs/components/importer.md),
+[manifest](docs/components/manifest.md), and
+[predictor](docs/components/predictor.md). The end-to-end benchmark labels its
+storage time as modeled; routing and prediction orchestration are measured CPU
+work, not RTX 4070 results.

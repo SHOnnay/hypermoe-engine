@@ -31,14 +31,16 @@ MoERuntime::MoERuntime(
     models::ExpertWeightMap weightMap,
     std::shared_ptr<tensor::TensorBackend> tensorBackend,
     std::shared_ptr<ExpertMlpExecutor> executor,
-    std::shared_ptr<prediction::ExpertHistory> history)
+    std::shared_ptr<prediction::ExpertHistory> history,
+    std::shared_ptr<prediction::ExpertPredictor> predictor)
     : router_(std::move(router)),
       scheduler_(std::move(scheduler)),
       experts_(experts),
       weightMap_(std::move(weightMap)),
       tensorBackend_(std::move(tensorBackend)),
       executor_(std::move(executor)),
-      history_(std::move(history)) {
+      history_(std::move(history)),
+      predictor_(std::move(predictor)) {
     if (!router_ || !scheduler_ || !tensorBackend_ || !tensorBackend_->available() ||
         !executor_) {
         throw std::invalid_argument("MoE runtime dependencies must be available");
@@ -58,7 +60,12 @@ LayerExecutionResult MoERuntime::executeLayer(
     }
     auto decision = router_->route(layerId, hiddenState, routerWeights);
     if (!decision.valid()) throw std::runtime_error("router returned an invalid decision");
-    if (history_) history_->record(decision);
+    if (predictor_ && history_) {
+        (void)predictor_->observeAndPrefetch(decision, *history_, *scheduler_);
+    } else {
+        if (history_) history_->record(decision);
+        if (predictor_) predictor_->observe(decision);
+    }
 
     std::vector<scheduler::ScheduleHandle> handles;
     handles.reserve(decision.selectedExpertIds.size());

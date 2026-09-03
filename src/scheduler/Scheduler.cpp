@@ -206,6 +206,12 @@ ScheduleHandle Scheduler::readyResult(const ScheduleRequest& request,
     auto future = promise.get_future().share();
     ScheduleResult result;
     result.success = true;
+    {
+        std::scoped_lock lock(mutex_);
+        const auto resident = residentTransfers_.find(
+            key(request.layerId, request.expertId));
+        if (resident != residentTransfers_.end()) result.transfer = resident->second;
+    }
     result.state = states_.snapshot(request.layerId, request.expertId);
     if (callback) {
         try {
@@ -291,9 +297,15 @@ void Scheduler::workerLoop() {
                               task->request.destination);
             {
                 std::scoped_lock lock(mutex_);
+                const auto expertKey =
+                    key(task->request.layerId, task->request.expertId);
+                if (task->request.destination == MemoryTier::Nvme) {
+                    residentTransfers_.erase(expertKey);
+                } else {
+                    residentTransfers_[expertKey] = transferred;
+                }
                 if (task->prefetchRequest && !task->activeConsumer) {
-                    prefetchedReady_.insert(
-                        key(task->request.layerId, task->request.expertId));
+                    prefetchedReady_.insert(expertKey);
                 }
             }
             publish(RuntimeEventType::TransferCompleted, task->request,

@@ -19,6 +19,11 @@ public:
         tensor::TensorView hiddenState,
         tensor::TensorView routerWeights,
         const RouterConfig& config) = 0;
+    [[nodiscard]] virtual BatchRouterDecision routeBatch(
+        LayerId layerId,
+        tensor::TensorView hiddenStates,
+        tensor::TensorView routerWeights,
+        const RouterConfig& config) = 0;
 };
 
 } // namespace hypermoe::router

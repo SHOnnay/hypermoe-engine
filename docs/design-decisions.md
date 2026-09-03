@@ -1,4 +1,4 @@
-# Design decisions through Phase 7
+# Design decisions through Phase 8
 
 ## Why memory mapping
 
@@ -268,7 +268,7 @@ family label.
 
 ## Why the first adapter uses a neutral manifest
 
-Phase 7 has no native checkpoint parser and must not invent one. The Qwen-style
+Phase 7 had no native checkpoint parser and did not invent one. The Qwen-style
 adapter accepts `hypermoe.model-manifest.v1`, a strict JSON inspection schema with
 explicit shapes, dtypes, offsets, sizes, layer/expert IDs, router settings, and
 tensor names. It cross-checks Qwen-style names against explicit IDs and validates
@@ -288,10 +288,10 @@ scores, applies stable softmax when configured, and selects any `k` in
 benchmarks deterministic. Selected scores may be renormalized independently;
 this is configuration rather than a model-family assumption.
 
-The CPU implementation handles one token at a time. A future CUDA backend can
-implement the same `RouterBackend` contract without changing scheduler or model
-code. Batched routing, grouped dispatch, capacity factors, expert masks, and
-auxiliary-loss behavior remain outside this phase.
+The CPU implementation retains the one-token entry point and now also routes a
+rank-2 token batch. A future CUDA backend can implement the same `RouterBackend`
+contract without changing scheduler or model code. Capacity factors, expert
+masks, token dropping, and auxiliary-loss behavior remain outside this phase.
 
 ## Layered identity and scheduler adoption
 
@@ -312,3 +312,51 @@ benchmark exercises this data with a deterministic 100,000-token workload. No
 prediction policy is claimed yet: the next predictor can consume history and
 adapter/router signals through a separate interface and submit ordinary
 prefetch-priority scheduler requests.
+
+## Why import produces a second manifest
+
+Source checkpoints are distribution formats, not runtime contracts. Their tensor
+names, sharding, physical orientation, fused projections, and configuration keys
+can change independently from HyperMoE scheduling. Phase 8 therefore inspects a
+source artifact once and emits a strict v2 manifest. Runtime code consumes only
+validated physical locations and logical expert roles.
+
+This is not a copy or conversion of weight payloads. SafeTensors inspection reads
+the bounded header, validates every declared range against its shard, and records
+relative file paths. A later packer can use the manifest to build `experts.bin`
+without parsing Qwen names again. Absolute paths and parent-directory traversal
+are forbidden so a manifest remains relocatable and cannot escape its artifact
+root.
+
+## Why Qwen supports two expert layouts
+
+Older Qwen MoE artifacts can expose separate gate/up/down tensors per expert,
+while current Qwen3 MoE implementations can store a three-dimensional fused
+`gate_up_proj` and a fused `down_proj`. The importer represents both as the same
+logical expert mapping. Slices retain `OUTPUT_INPUT` orientation because source
+linear weights are not silently transposed during metadata import.
+
+Supporting BF16 in metadata does not imply BF16 execution. The distinction lets
+inspection describe real artifacts accurately while backends continue to reject
+unsupported math paths.
+
+## Why prediction is statistical first
+
+Transition probability is cheap, explainable, deterministic, and can be updated
+online without a training system. Frequency prevents sparse observations from
+overweighting a single edge, recency preserves current locality, and
+co-occurrence captures top-k expert pairs. Statistics are keyed by inference
+stream so a batch does not create transitions between unrelated sequences.
+
+Predictions use the scheduler's existing lower priority and cancellation model.
+They do not bypass residency or transfer validation. The scheduler retains a
+completed speculative buffer until a demand request consumes it, which makes
+READY mean that bytes are still owned—not merely that a past future completed.
+
+## Batch routing boundary
+
+The router backend owns batched score calculation and top-k selection. Its result
+contains both per-token decisions and deterministic expert groups. This avoids
+forcing the future executor to repeatedly scan all token decisions when building
+an expert batch. Capacity factors, token dropping, and grouped GEMM remain
+deferred because they are model/runtime policies beyond reference routing.

@@ -5,7 +5,7 @@ whether selected scores are renormalized. `RouterDecision` contains layer ID,
 selected local expert IDs, and corresponding scores.
 
 `RouterBackend` owns the scoring and selection implementation. The CPU reference
-expects one contiguous FP32 hidden state and a `[hidden_size, expert_count]`
+expects contiguous FP32 hidden states and a `[hidden_size, expert_count]`
 weight matrix. It computes logits in double-precision accumulation, rejects
 non-finite values, optionally applies stable softmax, and resolves score ties by
 ascending expert ID.
@@ -31,10 +31,12 @@ hidden state + router weights
           output
 ```
 
-The current router is CPU-only and routes one token per call. CUDA/batched routing,
-capacity limits, token grouping, shared experts, and overflow/drop policies are
-future backend capabilities.
+The single-token API remains available. The batch API returns per-token decisions
+plus expert groups containing token indices and routing weights. CUDA routing,
+capacity limits, grouped expert execution, shared experts, and overflow/drop
+policies are future backend capabilities.
 
-`ExpertHistory` receives completed decisions and records frequency, transitions,
-and previous selections. A future predictor can turn that state into scheduler
-prefetch requests without coupling prediction to the router backend.
+`ExpertHistory` receives completed decisions. `TransitionDatabase` and
+`ExpertPredictor` turn per-stream transitions, frequency, recency, and
+co-occurrence into scheduler prefetch requests without coupling prediction to the
+router backend.

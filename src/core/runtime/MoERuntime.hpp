@@ -2,6 +2,7 @@
 
 #include "models/ExpertWeightMap.hpp"
 #include "prediction/ExpertHistory.hpp"
+#include "prediction/ExpertPredictor.hpp"
 #include "router/Router.hpp"
 #include "scheduler/Scheduler.hpp"
 #include "tensor/Tensor.hpp"
@@ -35,7 +36,8 @@ public:
                models::ExpertWeightMap weightMap,
                std::shared_ptr<tensor::TensorBackend> tensorBackend,
                std::shared_ptr<ExpertMlpExecutor> executor,
-               std::shared_ptr<prediction::ExpertHistory> history = {});
+               std::shared_ptr<prediction::ExpertHistory> history = {},
+               std::shared_ptr<prediction::ExpertPredictor> predictor = {});
 
     [[nodiscard]] LayerExecutionResult executeLayer(
         LayerId layerId,
@@ -54,6 +56,7 @@ private:
     std::shared_ptr<tensor::TensorBackend> tensorBackend_;
     std::shared_ptr<ExpertMlpExecutor> executor_;
     std::shared_ptr<prediction::ExpertHistory> history_;
+    std::shared_ptr<prediction::ExpertPredictor> predictor_;
     std::unordered_map<std::uint64_t, std::uint64_t> payloadOffsets_;
     std::mutex executionMutex_;
 };
