@@ -43,6 +43,27 @@ struct CpuCudaComparisonReport {
     [[nodiscard]] bool matches() const noexcept;
 };
 
+struct RoutedExpertOutput {
+    ExpertId expertId{};
+    std::vector<std::size_t> tokenIndices;
+    std::vector<float> routingWeights;
+    std::vector<float> values;
+};
+
+struct ExpertCombinationReference {
+    std::vector<float> output;
+    std::vector<float> tokenWeightSums;
+};
+
+struct ExpertCombinationComparisonReport {
+    bool routingMatches{};
+    bool normalizedWeights{};
+    std::vector<ComparisonResult> individualOutputs;
+    ComparisonResult combinedOutput;
+
+    [[nodiscard]] bool matches() const noexcept;
+};
+
 class CorrectnessOracle {
 public:
     [[nodiscard]] static NumericalTolerance toleranceFor(tensor::DType dtype) noexcept;
@@ -88,6 +109,18 @@ public:
         const router::RouterDecision& cudaRouting,
         const ExpertOracleTrace& cpuTrace,
         const ExpertOracleTrace& cudaTrace,
+        tensor::DType executionDType = tensor::DType::FP32);
+    [[nodiscard]] static ExpertCombinationReference combineExperts(
+        std::size_t tokenCount,
+        std::size_t hiddenDimension,
+        std::span<const RoutedExpertOutput> expertOutputs);
+    [[nodiscard]] static ExpertCombinationComparisonReport compareExpertCombination(
+        const router::BatchRouterDecision& actualRouting,
+        const router::BatchRouterDecision& expectedRouting,
+        std::span<const RoutedExpertOutput> actualExperts,
+        std::span<const RoutedExpertOutput> expectedExperts,
+        std::span<const float> actualCombined,
+        std::span<const float> expectedCombined,
         tensor::DType executionDType = tensor::DType::FP32);
 };
 

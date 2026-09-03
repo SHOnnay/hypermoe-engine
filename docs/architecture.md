@@ -1,4 +1,4 @@
-# HyperMoE architecture through Phase 11
+# HyperMoE architecture through Phase 12
 
 The runtime separates durable storage, movement, residency, eviction policy,
 hardware access, and measurement so future model adapters do not own memory
@@ -102,6 +102,27 @@ validated manifest + expert index
  stage-by-stage CPU/CUDA CorrectnessOracle report
 ```
 
+Phase 12 composes the first complete block-level reference pipeline:
+
+```text
+InferenceContext + hidden-state batch
+                 │
+                 ▼
+       Attention interface → CPU Q/K/V + scaled softmax + output
+                 │
+                 ▼
+              Norm interface → CPU RMSNorm
+                 │
+                 ▼
+ batch Router → ExpertBatch groups → unique expert scheduling
+                 │                         │
+                 │                         ▼
+                 └──────── weighted scatter-add ◄── grouped expert MLP
+                                           │
+                                           ▼
+                         attention residual + MoE output
+```
+
 ## Components
 
 - `ExpertIndex` parses a versioned, fixed-width little-endian format and builds
@@ -185,9 +206,10 @@ validated manifest + expert index
 - `CpuRouterBackend` implements FP32 scoring, stable softmax or raw scores,
   deterministic top-k for arbitrary k, and optional selected-score
   renormalization. `Router` is the backend/configuration boundary.
-- `MoERuntime` coordinates route → parallel scheduling → buffer adoption → expert
-  execution → routing-weighted combination for one MoE layer. Its current
-  execution lock deliberately serializes layer calls while the contracts mature.
+- `MoERuntime` coordinates batch route → parallel unique-expert scheduling →
+  buffer adoption → grouped expert execution → routing-weighted scatter-add.
+  The single-token API delegates to this path. Its current execution lock
+  deliberately serializes layer calls while the contracts mature.
 - `ExpertHistory` records per-layer expert frequency, cross-layer transitions,
   and the previous selection for profiling and predictor integration.
 - `SafeTensors` inspects bounded JSON headers and validates tensor ranges against
@@ -202,8 +224,15 @@ validated manifest + expert index
   dtype remains unchanged in the packed model.
 - `QuantizationPolicy` records validated INT8/Q4/Q8 scale, zero-point, and group
   metadata without implying an optimized kernel.
-- `TransformerLayer` and `MoELayer` add the orchestration boundary for identity
-  attention, real MoE dispatch, and residual output.
+- `Attention` and `Norm` are device-neutral layer contracts. `CpuAttention`
+  supplies single-head FP32 Q/K/V, scaled softmax, context, and output projection;
+  `RMSNorm` supplies the CPU reference normalization.
+- `ExpertBatch` represents all token rows and routing weights assigned to one
+  expert. `MoELayer::executeExpertsBatch` exposes grouped execution while
+  retaining the legacy single-token and identity-wrapper APIs.
+- `InferenceContext` validates batch/layer dimensions and records routing plus
+  execution metadata. `TransformerBlock` composes attention, RMSNorm, grouped
+  MoE, and residual addition without backend-specific branches.
 - `ModelImporter` is the architecture-independent artifact boundary.
   `QwenImporter` alone interprets Qwen configuration keys and tensor names,
   including individual Qwen2 projections and fused Qwen3 expert storage.
@@ -262,9 +291,9 @@ addition to tier-independent events.
 ## Deferred intentionally
 
 - GGUF readers and DeepSeek/GLM/Kimi/Mixtral artifact importers
-- Native CUDA router execution, token generation, attention, and KV cache
+- Native CUDA router, attention, RMSNorm, grouped gather/scatter, and KV cache
 - Direct-storage integrations and unbuffered platform-specific NVMe benchmarks
-- Grouped expert execution and measured compute/transfer overlap
+- Multi-head/causal attention, positional encoding, and a complete model loop
 - Automatic scheduler-driven capacity selection and eviction policy execution
 - Quantized dequantization/GEMM, batched/strided GEMM, FP16 compute, kernel launch
   policy, and CUDA graphs

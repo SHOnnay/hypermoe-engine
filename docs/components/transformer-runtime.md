@@ -1,22 +1,37 @@
-# Transformer runtime foundation
+# Transformer runtime
 
-`TransformerLayer` is the generic layer execution boundary. `MoELayer` supplies
-the first implementation and connects a validated hidden state to `MoERuntime`,
-which routes, schedules, adopts, executes, and combines selected experts.
-
-The current flow is:
+`TransformerBlock` is the Phase 12 execution boundary. It owns no tensor memory
+policy and contains no CUDA or model-family branch. Its dependencies are the
+abstract `Attention`, `Norm`, `MoELayer`, and `TensorBackend` contracts.
 
 ```text
-hidden state → validated identity attention placeholder
-             → router → selected experts → weighted MoE output
-             → residual add → layer output
+hidden-state batch
+      │
+      ▼
+Attention (Q/K/V, scaled softmax, context, output projection)
+      │
+      ▼
+RMSNorm
+      │
+      ▼
+MoELayer (batch route, schedule, grouped experts, weighted sum)
+      │
+      ▼
+residual add with attention output
 ```
 
-The attention placeholder performs a real checked tensor copy rather than
-pretending attention was computed. This makes tensor ownership, device, dtype,
-shape, and residual behavior testable while leaving attention architecture and
-KV-cache policy unspecified.
+`InferenceContext` carries batch size, sequence position, hidden dimension, and
+layer index. After successful execution it records per-token routing decisions,
+assignment and unique-expert counts, payload bytes, selected backend, and timing
+for routing, scheduling, expert execution, and expert combination. Advancing a
+layer clears only layer-local routing and execution state.
 
-Phase 10 validates one BF16-backed Qwen-style MoE layer using FP32 CPU execution
-and an independent scalar oracle. There is no normalization, attention kernel,
-tokenizer, generation loop, or server yet.
+The Phase 10 `TransformerLayer`/`MoELayer::execute` entry point remains for API
+compatibility. It still represents the earlier identity-attention wrapper.
+Production-oriented Phase 12 callers use `TransformerBlock` and
+`MoELayer::executeExpertsBatch`; the one-token expert API delegates to the same
+batched implementation.
+
+This is one transformer block, not complete inference. Multi-head and causal
+attention, positional encoding, KV caching, dense layers, tokenizer, generation
+loop, sampling, and server APIs are intentionally outside Phase 12.

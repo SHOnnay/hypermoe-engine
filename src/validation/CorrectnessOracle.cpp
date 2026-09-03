@@ -14,6 +14,12 @@ bool CpuCudaComparisonReport::matches() const noexcept {
            gated.matches && finalOutput.matches;
 }
 
+bool ExpertCombinationComparisonReport::matches() const noexcept {
+    if (!routingMatches || !normalizedWeights || !combinedOutput.matches) return false;
+    return std::all_of(individualOutputs.begin(), individualOutputs.end(),
+                       [](const auto& result) { return result.matches; });
+}
+
 NumericalTolerance CorrectnessOracle::toleranceFor(tensor::DType dtype) noexcept {
     switch (dtype) {
     case tensor::DType::FP32: return {1.0e-5F, 1.0e-5F};
@@ -224,6 +230,99 @@ CpuCudaComparisonReport CorrectnessOracle::compareCpuCuda(
     report.activation = compare(cpuTrace.activation, cudaTrace.activation, tolerance);
     report.gated = compare(cpuTrace.gated, cudaTrace.gated, tolerance);
     report.finalOutput = compare(cpuTrace.output, cudaTrace.output, tolerance);
+    return report;
+}
+
+ExpertCombinationReference CorrectnessOracle::combineExperts(
+    std::size_t tokenCount,
+    std::size_t hiddenDimension,
+    std::span<const RoutedExpertOutput> expertOutputs) {
+    if (tokenCount == 0 || hiddenDimension == 0 || expertOutputs.empty() ||
+        tokenCount > std::numeric_limits<std::size_t>::max() / hiddenDimension) {
+        throw std::invalid_argument("expert combination dimensions are invalid");
+    }
+    ExpertCombinationReference result;
+    result.output.assign(tokenCount * hiddenDimension, 0.0F);
+    result.tokenWeightSums.assign(tokenCount, 0.0F);
+    for (const auto& expert : expertOutputs) {
+        if (expert.tokenIndices.empty() ||
+            expert.tokenIndices.size() != expert.routingWeights.size() ||
+            expert.tokenIndices.size() >
+                std::numeric_limits<std::size_t>::max() / hiddenDimension ||
+            expert.values.size() != expert.tokenIndices.size() * hiddenDimension) {
+            throw std::invalid_argument("routed expert output metadata is invalid");
+        }
+        for (std::size_t row = 0; row < expert.tokenIndices.size(); ++row) {
+            const auto token = expert.tokenIndices[row];
+            const auto weight = expert.routingWeights[row];
+            if (token >= tokenCount || !std::isfinite(weight)) {
+                throw std::invalid_argument("routed expert assignment is invalid");
+            }
+            result.tokenWeightSums[token] += weight;
+            for (std::size_t hidden = 0; hidden < hiddenDimension; ++hidden) {
+                result.output[token * hiddenDimension + hidden] +=
+                    weight * expert.values[row * hiddenDimension + hidden];
+            }
+        }
+    }
+    return result;
+}
+
+ExpertCombinationComparisonReport CorrectnessOracle::compareExpertCombination(
+    const router::BatchRouterDecision& actualRouting,
+    const router::BatchRouterDecision& expectedRouting,
+    std::span<const RoutedExpertOutput> actualExperts,
+    std::span<const RoutedExpertOutput> expectedExperts,
+    std::span<const float> actualCombined,
+    std::span<const float> expectedCombined,
+    tensor::DType executionDType) {
+    const auto tolerance = toleranceFor(executionDType);
+    ExpertCombinationComparisonReport report;
+    report.routingMatches = actualRouting.layerId == expectedRouting.layerId &&
+                            actualRouting.tokens.size() == expectedRouting.tokens.size();
+    if (report.routingMatches) {
+        for (std::size_t token = 0; token < actualRouting.tokens.size(); ++token) {
+            const auto& actual = actualRouting.tokens[token];
+            const auto& expected = expectedRouting.tokens[token];
+            if (actual.selectedExpertIds != expected.selectedExpertIds ||
+                !compare(actual.routingScores, expected.routingScores,
+                         tolerance).matches) {
+                report.routingMatches = false;
+                break;
+            }
+        }
+    }
+    report.normalizedWeights = !actualRouting.tokens.empty();
+    for (const auto& token : actualRouting.tokens) {
+        const auto sum = std::accumulate(token.routingScores.begin(),
+                                         token.routingScores.end(), 0.0F);
+        const auto difference = std::abs(sum - 1.0F);
+        if (!std::isfinite(sum) ||
+            difference > tolerance.absolute + tolerance.relative) {
+            report.normalizedWeights = false;
+            break;
+        }
+    }
+    if (actualExperts.size() != expectedExperts.size()) {
+        report.individualOutputs.push_back({false, 1, 0.0F, 0.0F});
+    } else {
+        report.individualOutputs.reserve(actualExperts.size());
+        for (std::size_t index = 0; index < actualExperts.size(); ++index) {
+            const auto& actual = actualExperts[index];
+            const auto& expected = expectedExperts[index];
+            if (actual.expertId != expected.expertId ||
+                actual.tokenIndices != expected.tokenIndices ||
+                actual.routingWeights.size() != expected.routingWeights.size() ||
+                !compare(actual.routingWeights, expected.routingWeights,
+                         tolerance).matches) {
+                report.individualOutputs.push_back({false, 1, 0.0F, 0.0F});
+            } else {
+                report.individualOutputs.push_back(
+                    compare(actual.values, expected.values, tolerance));
+            }
+        }
+    }
+    report.combinedOutput = compare(actualCombined, expectedCombined, tolerance);
     return report;
 }
 

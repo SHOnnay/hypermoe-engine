@@ -1,11 +1,13 @@
 #pragma once
 
+#include "experts/ExpertBatch.hpp"
 #include "models/ExpertWeightMap.hpp"
 #include "prediction/ExpertHistory.hpp"
 #include "prediction/ExpertPredictor.hpp"
 #include "router/Router.hpp"
 #include "scheduler/Scheduler.hpp"
 #include "tensor/Tensor.hpp"
+#include "runtime/InferenceContext.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -28,6 +30,14 @@ struct LayerExecutionResult {
     tensor::Tensor output;
 };
 
+struct BatchLayerExecutionResult {
+    router::BatchRouterDecision routing;
+    std::vector<ExpertBatch> expertBatches;
+    std::vector<tensor::Tensor> expertOutputs;
+    tensor::Tensor output;
+    ExecutionMetadata execution;
+};
+
 class MoERuntime {
 public:
     MoERuntime(std::shared_ptr<router::Router> router,
@@ -42,6 +52,10 @@ public:
     [[nodiscard]] LayerExecutionResult executeLayer(
         LayerId layerId,
         tensor::TensorView hiddenState,
+        tensor::TensorView routerWeights);
+    [[nodiscard]] BatchLayerExecutionResult executeBatch(
+        LayerId layerId,
+        tensor::TensorView hiddenStates,
         tensor::TensorView routerWeights);
 
 private:

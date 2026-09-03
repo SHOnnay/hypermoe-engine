@@ -8,7 +8,7 @@
 
 namespace hypermoe::transformer {
 
-MoELayer::MoELayer(std::shared_ptr<runtime::MoERuntime> runtime,
+MoELayer::MoELayer(std::shared_ptr<hypermoe::runtime::MoERuntime> runtime,
                    std::shared_ptr<tensor::TensorBackend> backend)
     : runtime_(std::move(runtime)), backend_(std::move(backend)) {
     if (!runtime_ || !backend_ || !backend_->available()) {
@@ -30,7 +30,7 @@ TransformerLayerResult MoELayer::execute(
     // kernels are introduced. Copying keeps ownership and residual inputs clear.
     auto attention = backend_->allocateTensor(hiddenState.shape(), tensor::DType::FP32);
     backend_->copyTensor(hiddenState, attention);
-    auto moe = runtime_->executeLayer(layerId, attention, routerWeights);
+    auto moe = executeExperts(layerId, attention, routerWeights);
     if (moe.output.shape() != attention.shape()) {
         throw std::invalid_argument("MoE output shape is incompatible with residual");
     }
@@ -38,6 +38,20 @@ TransformerLayerResult MoELayer::execute(
     backend_->add(attention, moe.output, output);
     backend_->synchronize();
     return {std::move(moe.routing), std::move(attention), std::move(output)};
+}
+
+hypermoe::runtime::LayerExecutionResult MoELayer::executeExperts(
+    LayerId layerId,
+    tensor::TensorView hiddenState,
+    tensor::TensorView routerWeights) {
+    return runtime_->executeLayer(layerId, hiddenState, routerWeights);
+}
+
+hypermoe::runtime::BatchLayerExecutionResult MoELayer::executeExpertsBatch(
+    LayerId layerId,
+    tensor::TensorView hiddenStates,
+    tensor::TensorView routerWeights) {
+    return runtime_->executeBatch(layerId, hiddenStates, routerWeights);
 }
 
 } // namespace hypermoe::transformer

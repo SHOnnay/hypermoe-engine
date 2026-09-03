@@ -1,11 +1,11 @@
 # HyperMoE Engine
 
 HyperMoE is a C++20 inference-runtime project for hierarchical Mixture-of-Experts
-memory management across VRAM, pinned RAM, ordinary RAM, and NVMe. Phase 11 adds
-structured CUDA runtime validation, real-artifact GPU expert execution tests,
-device-aware FP16/BF16 staging, CPU/CUDA numerical comparison, and an NVIDIA
-hardware benchmark. There is intentionally no
-complete transformer inference, tokenizer, server, or custom CUDA kernel.
+memory management across VRAM, pinned RAM, ordinary RAM, and NVMe. Phase 12 adds
+a backend-neutral transformer-block runtime, reference scaled dot-product
+attention and RMSNorm, grouped multi-token top-k expert execution, and an
+independent weighted-combination oracle. There is intentionally no complete
+model loop, tokenizer, server, KV cache, sampling, or custom CUDA kernel.
 
 ## Build and run
 
@@ -33,6 +33,7 @@ ctest --test-dir build --output-on-failure
 ./build/hypermoe_model_validation_benchmark /path/to/qwen-artifact \
   model_validation_report.json
 ./build/hypermoe_cuda_runtime_benchmark cuda_runtime_report.json
+./build/hypermoe_transformer_benchmark transformer_report.json
 ```
 
 Enable runtime memory checks with:
@@ -274,3 +275,24 @@ the FP32 correctness baseline. Native low-precision GEMM, quantized kernels, and
 CUDA elementwise kernels remain deferred. See [CUDA runtime](docs/components/cuda-runtime.md),
 [GPU execution](docs/components/gpu-execution.md), and
 [hardware validation](docs/components/hardware-validation.md).
+
+## Transformer execution pipeline
+
+`TransformerBlock` composes four stable interfaces: `Attention`, `Norm`,
+`MoELayer`, and `TensorBackend`. The Phase 12 reference order is attention,
+RMSNorm, grouped top-k MoE execution, and a residual addition. `InferenceContext`
+validates batch/layer identity and records routing and per-stage execution
+metadata without carrying model-family logic.
+
+`MoERuntime::executeBatch` routes all tokens together, requests every unique
+expert once, gathers assigned token rows into an `ExpertBatch`, executes one MLP
+per expert group, and scatters the routing-score-weighted results back into the
+batch output. The existing single-token entry point delegates to this path.
+
+The CPU attention implementation is deliberately single-head and non-causal; it
+is a correctness foundation for Q/K/V projection, scaled scores, stable softmax,
+context aggregation, and output projection. CUDA layer implementations can
+replace the interfaces without adding CUDA branches to transformer code. See
+[transformer runtime](docs/components/transformer-runtime.md),
+[attention](docs/components/attention.md), and
+[MoE layer](docs/components/moe-layer.md).

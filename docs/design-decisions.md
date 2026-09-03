@@ -1,4 +1,4 @@
-# Design decisions through Phase 11
+# Design decisions through Phase 12
 
 ## Why memory mapping
 
@@ -455,3 +455,42 @@ the executor has synchronized and released it.
 This is deliberately conservative. Later event-backed leases can release without
 blocking the host, but only after their completion ordering is proven on the
 target GPU.
+
+## Why transformer layers depend on interfaces
+
+Attention, normalization, MoE execution, and tensor math evolve at different
+rates and will not always share an implementation device. `TransformerBlock`
+therefore depends on `Attention`, `Norm`, `MoELayer`, and `TensorBackend`, while
+requiring them to agree on the active device at construction. This keeps CUDA
+headers and model-family decisions out of orchestration and makes the CPU path a
+complete numerical reference.
+
+## Why Phase 12 uses attention then RMSNorm
+
+The block order is an explicit runtime contract for this foundation, not a claim
+that every supported model uses the same architecture. Attention produces a
+shape-preserving hidden state, RMSNorm prepares the router/expert input, and the
+MoE result is added to the attention output. Future adapters may compose these
+same primitives in an architecture-specific block once checkpoint metadata for
+the complete layer is validated.
+
+The reference attention is single-head and non-causal. Adding an unverified mask,
+rotary position embedding, or head layout would create false model compatibility;
+those belong with the future architecture adapter and KV-cache work.
+
+## Why tokens are grouped before expert execution
+
+Top-k routing creates repeated requests for the same expert across tokens.
+Moving or executing that expert once per assignment would multiply transfer and
+launch overhead. The batch path deduplicates scheduling by expert, gathers its
+assigned rows, invokes one MLP, then applies each routing weight during scatter.
+The initial gather/scatter uses host tensors for transparent correctness. CUDA
+grouping kernels are deferred until target-hardware profiles justify them.
+
+## Why the combination oracle is independent
+
+A final-output-only test can hide compensating defects in routing weights and
+expert results. The Phase 12 oracle checks selected experts and normalized scores,
+compares every grouped expert output, independently performs weighted scatter-add,
+and finally compares the batch output. This isolates routing, MLP, and combination
+failures without reusing backend operations.
