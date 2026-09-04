@@ -1,6 +1,7 @@
 #pragma once
 
 #include "models/ModelConfig.hpp"
+#include "models/runtime/ModelArchitecture.hpp"
 #include "router/RouterConfig.hpp"
 #include "tensor/DType.hpp"
 #include "tensor/Shape.hpp"
@@ -58,6 +59,22 @@ struct ManifestRouter {
     TensorLayout layout{TensorLayout::OutputInput};
 };
 
+struct ManifestTensorBinding {
+    std::string tensorName;
+    TensorLayout layout{TensorLayout::OutputInput};
+};
+
+struct ManifestLayerMapping {
+    std::uint32_t layerId{};
+    ManifestTensorBinding queryProjection;
+    ManifestTensorBinding keyProjection;
+    ManifestTensorBinding valueProjection;
+    ManifestTensorBinding outputProjection;
+    std::string inputNormTensor;
+    std::string postAttentionNormTensor;
+    std::string routerTensor;
+};
+
 class ModelManifest {
 public:
     static constexpr std::string_view schemaVersion =
@@ -68,14 +85,18 @@ public:
     ModelArchitecture architecture{ModelArchitecture::UNKNOWN};
     std::string sourceArchitecture;
     ModelConfig config;
+    std::optional<runtime::ModelArchitecture> runtimeArchitecture;
     ManifestRouter router;
     std::vector<ManifestTensor> tensors;
     std::vector<ManifestExpertMapping> experts;
+    std::vector<ManifestLayerMapping> layers;
 
     void validate() const;
     [[nodiscard]] const ManifestTensor* findTensor(std::string_view name) const noexcept;
     [[nodiscard]] const ManifestExpertMapping*
     findExpert(std::uint32_t layerId, std::uint32_t expertId) const noexcept;
+    [[nodiscard]] const ManifestLayerMapping*
+    findLayer(std::uint32_t layerId) const noexcept;
     [[nodiscard]] std::string toJson() const;
     void save(const std::filesystem::path& path) const;
     [[nodiscard]] static ModelManifest load(const std::filesystem::path& path);

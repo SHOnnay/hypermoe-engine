@@ -155,7 +155,7 @@ int main(int argc, char** argv) {
         auto output = makeTensor(cpu, {2, 2}, identity);
         auto norm = makeTensor(cpu, {2}, normValues);
         const transformer::runtime::TransformerBlockWeights weights{
-            {query, key, value, output}, norm, routerWeights};
+            {query, key, value, output}, norm, routerWeights, {}, {}};
 
         runtime::InferenceContext context;
         context.batchSize = tokenCount;

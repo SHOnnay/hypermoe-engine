@@ -25,3 +25,9 @@ file offsets.
 The earlier v1 adapter-validation manifest remains supported by
 `QwenMoEAdapter`; v2 is the artifact import/runtime handoff and is intentionally
 more explicit.
+
+Phase 13 extends v2 compatibly with optional `runtime_architecture` metadata and
+a `layers` array. Each complete layer binds Q/K/V/O projections, input and
+post-attention normalization, and its router tensor by logical role. Matrix
+bindings carry an explicit layout. Existing expert-only v2 manifests remain
+valid; `TransformerModelRuntime` requires the complete extension.

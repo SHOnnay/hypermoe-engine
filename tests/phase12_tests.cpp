@@ -317,7 +317,7 @@ void testBatchedMoEAndTransformerBlock() {
     context.layerIndex = 0;
     const auto blockResult = block.execute(
         context, hidden,
-        {{query, key, value, attentionOutput}, normWeight, routerWeights});
+        {{query, key, value, attentionOutput}, normWeight, routerWeights, {}, {}});
     std::vector<float> residualExpected(6);
     const auto attentionValues = floats(blockResult.attention.output);
     const auto moeValues = floats(blockResult.moe.output);

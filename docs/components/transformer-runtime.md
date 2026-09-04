@@ -1,6 +1,6 @@
 # Transformer runtime
 
-`TransformerBlock` is the Phase 12 execution boundary. It owns no tensor memory
+`TransformerBlock` is the block execution boundary. It owns no tensor memory
 policy and contains no CUDA or model-family branch. Its dependencies are the
 abstract `Attention`, `Norm`, `MoELayer`, and `TensorBackend` contracts.
 
@@ -8,7 +8,11 @@ abstract `Attention`, `Norm`, `MoELayer`, and `TensorBackend` contracts.
 hidden-state batch
       │
       ▼
-Attention (Q/K/V, scaled softmax, context, output projection)
+input RMSNorm (when mapped)
+      │
+      ▼
+Attention (Q/K/V, causal scaled softmax, RoPE/cache, output projection)
+      │ attention residual (when input norm is mapped)
       │
       ▼
 RMSNorm
@@ -17,7 +21,7 @@ RMSNorm
 MoELayer (batch route, schedule, grouped experts, weighted sum)
       │
       ▼
-residual add with attention output
+residual add with the attention residual branch
 ```
 
 `InferenceContext` carries batch size, sequence position, hidden dimension, and
@@ -32,6 +36,6 @@ Production-oriented Phase 12 callers use `TransformerBlock` and
 `MoELayer::executeExpertsBatch`; the one-token expert API delegates to the same
 batched implementation.
 
-This is one transformer block, not complete inference. Multi-head and causal
-attention, positional encoding, KV caching, dense layers, tokenizer, generation
-loop, sampling, and server APIs are intentionally outside Phase 12.
+`TransformerModelRuntime` now composes mapped blocks across all declared layers.
+Token embeddings, dense layers, final normalization/output heads, tokenizer,
+generation loop, sampling, and server APIs remain outside this foundation.

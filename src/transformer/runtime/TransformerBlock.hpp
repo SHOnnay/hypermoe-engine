@@ -23,6 +23,8 @@ struct TransformerBlockWeights {
     attention::AttentionWeights attention;
     tensor::TensorView norm;
     tensor::TensorView router;
+    attention::AttentionConfiguration attentionConfiguration;
+    tensor::TensorView inputNorm;
 };
 
 struct TransformerBlockTimings {
@@ -34,7 +36,9 @@ struct TransformerBlockTimings {
 };
 
 struct TransformerBlockResult {
+    tensor::Tensor normalizedInput;
     attention::AttentionResult attention;
+    tensor::Tensor attentionResidual;
     tensor::Tensor normalized;
     hypermoe::runtime::BatchLayerExecutionResult moe;
     tensor::Tensor output;
@@ -47,6 +51,11 @@ public:
                      std::shared_ptr<norm::Norm> normalization,
                      std::shared_ptr<MoELayer> moe,
                      std::shared_ptr<tensor::TensorBackend> backend);
+    TransformerBlock(std::shared_ptr<attention::Attention> attention,
+                     std::shared_ptr<norm::Norm> inputNormalization,
+                     std::shared_ptr<norm::Norm> postAttentionNormalization,
+                     std::shared_ptr<MoELayer> moe,
+                     std::shared_ptr<tensor::TensorBackend> backend);
 
     [[nodiscard]] TransformerBlockResult execute(
         hypermoe::runtime::InferenceContext& context,
@@ -55,6 +64,7 @@ public:
 
 private:
     std::shared_ptr<attention::Attention> attention_;
+    std::shared_ptr<norm::Norm> inputNormalization_;
     std::shared_ptr<norm::Norm> normalization_;
     std::shared_ptr<MoELayer> moe_;
     std::shared_ptr<tensor::TensorBackend> backend_;

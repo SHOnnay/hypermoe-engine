@@ -3,6 +3,7 @@
 #include "tensor/Tensor.hpp"
 #include "tensor/TensorView.hpp"
 
+#include <cstddef>
 #include <string_view>
 
 namespace hypermoe::transformer::norm {
@@ -12,6 +13,8 @@ public:
     virtual ~Norm() = default;
     [[nodiscard]] virtual std::string_view name() const noexcept = 0;
     [[nodiscard]] virtual tensor::Device device() const noexcept = 0;
+    [[nodiscard]] virtual std::size_t hiddenDimension() const noexcept = 0;
+    [[nodiscard]] virtual float epsilon() const noexcept = 0;
     [[nodiscard]] virtual tensor::Tensor execute(
         tensor::TensorView input,
         tensor::TensorView weight) = 0;

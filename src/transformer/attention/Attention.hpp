@@ -3,7 +3,13 @@
 #include "tensor/Tensor.hpp"
 #include "tensor/TensorView.hpp"
 
+#include <cstddef>
+#include <cstdint>
 #include <string_view>
+
+namespace hypermoe::runtime::cache {
+class KVCache;
+}
 
 namespace hypermoe::transformer::attention {
 
@@ -24,6 +30,18 @@ struct AttentionResult {
     tensor::Tensor output;
 };
 
+struct AttentionConfiguration {
+    std::size_t headCount{1};
+    std::size_t keyValueHeadCount{1};
+    std::size_t headDimension{};
+    bool causal{};
+    bool rotaryEmbedding{};
+    float ropeTheta{10000.0F};
+    std::uint32_t layerIndex{};
+    std::uint64_t positionOffset{};
+    hypermoe::runtime::cache::KVCache* kvCache{};
+};
+
 class Attention {
 public:
     virtual ~Attention() = default;
@@ -31,7 +49,8 @@ public:
     [[nodiscard]] virtual tensor::Device device() const noexcept = 0;
     [[nodiscard]] virtual AttentionResult execute(
         tensor::TensorView hiddenStates,
-        const AttentionWeights& weights) = 0;
+        const AttentionWeights& weights,
+        const AttentionConfiguration& configuration = {}) = 0;
 };
 
 } // namespace hypermoe::transformer::attention

@@ -102,6 +102,11 @@ ProjectionLocation parseProjection(const JsonValue& value) {
     return result;
 }
 
+ManifestTensorBinding parseBinding(const JsonValue& value) {
+    return {value.require("tensor").asString(),
+            parseLayout(value.require("layout").asString())};
+}
+
 void writeShape(std::ostream& output, const tensor::Shape& shape) {
     output << '[';
     for (std::size_t index = 0; index < shape.dimensions().size(); ++index) {
@@ -117,6 +122,11 @@ void writeProjection(std::ostream& output, const ProjectionLocation& projection)
            << ",\"size\":" << projection.size << ",\"shape\":";
     writeShape(output, projection.shape);
     output << ",\"layout\":\"" << toString(projection.layout) << "\"}";
+}
+
+void writeBinding(std::ostream& output, const ManifestTensorBinding& binding) {
+    output << "{\"tensor\":\"" << escapeJson(binding.tensorName)
+           << "\",\"layout\":\"" << toString(binding.layout) << "\"}";
 }
 
 void validatePath(const std::filesystem::path& path) {
@@ -153,6 +163,16 @@ void ModelManifest::validate() const {
     router.config.validate();
     if (router.config.expertCount != config.expertCount) {
         throw std::invalid_argument("manifest router expert count disagrees with model");
+    }
+    if (runtimeArchitecture) {
+        runtimeArchitecture->validate();
+        if (runtimeArchitecture->layerCount != config.layerCount ||
+            runtimeArchitecture->hiddenDimension != config.hiddenSize ||
+            runtimeArchitecture->expertCount != config.expertCount ||
+            runtimeArchitecture->topK != router.config.topK) {
+            throw std::invalid_argument(
+                "manifest runtime architecture disagrees with model configuration");
+        }
     }
     if (tensors.empty() || experts.empty() || router.tensors.empty()) {
         throw std::invalid_argument("manifest must contain router and expert tensors");
@@ -250,6 +270,65 @@ void ModelManifest::validate() const {
             throw std::invalid_argument("manifest router layer has no expert mappings");
         }
     }
+    if (!layers.empty()) {
+        if (!runtimeArchitecture || layers.size() != runtimeArchitecture->layerCount) {
+            throw std::invalid_argument(
+                "manifest runtime architecture must map every transformer layer");
+        }
+        const auto& runtime = *runtimeArchitecture;
+        std::set<std::uint32_t> mappedLayers;
+        const auto validateBinding = [&](const ManifestTensorBinding& binding,
+                                         const tensor::Shape& inputOutputShape) {
+            const auto found = byName.find(binding.tensorName);
+            if (found == byName.end()) {
+                throw std::invalid_argument(
+                    "transformer layer references an unknown projection tensor");
+            }
+            const auto expected = binding.layout == TensorLayout::InputOutput
+                ? inputOutputShape
+                : tensor::Shape{inputOutputShape.dimensions()[1],
+                                inputOutputShape.dimensions()[0]};
+            if (found->second->shape != expected) {
+                throw std::invalid_argument(
+                    "transformer projection shape and layout are incompatible");
+            }
+        };
+        const auto queryWidth = runtime.attentionHeads * runtime.headDimension;
+        const auto keyValueWidth = runtime.keyValueHeads * runtime.headDimension;
+        for (const auto& layer : layers) {
+            if (layer.layerId >= runtime.layerCount ||
+                !mappedLayers.insert(layer.layerId).second) {
+                throw std::invalid_argument(
+                    "transformer layer mapping is invalid or duplicated");
+            }
+            validateBinding(layer.queryProjection,
+                            {runtime.hiddenDimension, queryWidth});
+            validateBinding(layer.keyProjection,
+                            {runtime.hiddenDimension, keyValueWidth});
+            validateBinding(layer.valueProjection,
+                            {runtime.hiddenDimension, keyValueWidth});
+            validateBinding(layer.outputProjection,
+                            {queryWidth, runtime.hiddenDimension});
+            const auto inputNorm = byName.find(layer.inputNormTensor);
+            const auto postNorm = byName.find(layer.postAttentionNormTensor);
+            if (inputNorm == byName.end() || postNorm == byName.end() ||
+                inputNorm->second->shape != tensor::Shape{runtime.hiddenDimension} ||
+                postNorm->second->shape != tensor::Shape{runtime.hiddenDimension}) {
+                throw std::invalid_argument(
+                    "transformer normalization mapping is incompatible");
+            }
+            const auto routerMapping = std::find_if(
+                router.tensors.begin(), router.tensors.end(),
+                [&](const auto& value) {
+                    return value.layerId == layer.layerId &&
+                           value.tensorName == layer.routerTensor;
+                });
+            if (routerMapping == router.tensors.end()) {
+                throw std::invalid_argument(
+                    "transformer layer router mapping disagrees with router manifest");
+            }
+        }
+    }
 }
 
 const ManifestTensor* ModelManifest::findTensor(std::string_view name) const noexcept {
@@ -264,6 +343,15 @@ const ManifestExpertMapping* ModelManifest::findExpert(
         return value.layerId == layerId && value.expertId == expertId;
     });
     return found == experts.end() ? nullptr : &*found;
+}
+
+const ManifestLayerMapping* ModelManifest::findLayer(
+    std::uint32_t layerId) const noexcept {
+    const auto found = std::find_if(layers.begin(), layers.end(),
+                                    [&](const auto& value) {
+                                        return value.layerId == layerId;
+                                    });
+    return found == layers.end() ? nullptr : &*found;
 }
 
 std::string ModelManifest::toJson() const {
@@ -289,8 +377,20 @@ std::string ModelManifest::toJson() const {
            << (config.capabilities.sharedExperts ? "true" : "false")
            << ",\"quantized_expert_weights\":"
            << (config.capabilities.quantizedExpertWeights ? "true" : "false")
-           << "},\n"
-           << "  \"router\": {\"expert_count\":" << router.config.expertCount
+           << "},\n";
+    if (runtimeArchitecture) {
+        output << "  \"runtime_architecture\": {\"attention_heads\":"
+               << runtimeArchitecture->attentionHeads
+               << ",\"key_value_heads\":" << runtimeArchitecture->keyValueHeads
+               << ",\"head_dimension\":" << runtimeArchitecture->headDimension
+               << ",\"rope_theta\":" << runtimeArchitecture->ropeTheta
+               << ",\"input_norm_epsilon\":"
+               << runtimeArchitecture->inputNormalization.epsilon
+               << ",\"post_attention_norm_epsilon\":"
+               << runtimeArchitecture->postAttentionNormalization.epsilon
+               << "},\n";
+    }
+    output << "  \"router\": {\"expert_count\":" << router.config.expertCount
            << ",\"top_k\":" << router.config.topK
            << ",\"normalization\":\"" << toString(router.config.normalization)
            << "\",\"renormalize_selected\":"
@@ -323,6 +423,23 @@ std::string ModelManifest::toJson() const {
         output << ",\"down\":";
         writeProjection(output, expert.down);
         output << '}' << (index + 1 == experts.size() ? "\n" : ",\n");
+    }
+    output << "  ],\n  \"layers\": [\n";
+    for (std::size_t index = 0; index < layers.size(); ++index) {
+        const auto& layer = layers[index];
+        output << "    {\"layer_id\":" << layer.layerId << ",\"q_proj\":";
+        writeBinding(output, layer.queryProjection);
+        output << ",\"k_proj\":";
+        writeBinding(output, layer.keyProjection);
+        output << ",\"v_proj\":";
+        writeBinding(output, layer.valueProjection);
+        output << ",\"o_proj\":";
+        writeBinding(output, layer.outputProjection);
+        output << ",\"input_norm\":\"" << escapeJson(layer.inputNormTensor)
+               << "\",\"post_attention_norm\":\""
+               << escapeJson(layer.postAttentionNormTensor)
+               << "\",\"router\":\"" << escapeJson(layer.routerTensor)
+               << "\"}" << (index + 1 == layers.size() ? "\n" : ",\n");
     }
     output << "  ]\n}\n";
     return output.str();
@@ -374,6 +491,26 @@ ModelManifest ModelManifest::load(const std::filesystem::path& path) {
     result.router.config.renormalizeSelected =
         routerValue.require("renormalize_selected").asBool();
     result.router.layout = parseLayout(routerValue.require("layout").asString());
+    if (const auto* runtimeValue = root.find("runtime_architecture")) {
+        runtime::ModelArchitecture architecture;
+        architecture.layerCount = result.config.layerCount;
+        architecture.hiddenDimension = result.config.hiddenSize;
+        architecture.attentionHeads = asSize(
+            runtimeValue->require("attention_heads"), "attention_heads");
+        architecture.keyValueHeads = asSize(
+            runtimeValue->require("key_value_heads"), "key_value_heads");
+        architecture.headDimension = asSize(
+            runtimeValue->require("head_dimension"), "head_dimension");
+        architecture.expertCount = result.config.expertCount;
+        architecture.topK = result.router.config.topK;
+        architecture.ropeTheta = static_cast<float>(
+            runtimeValue->require("rope_theta").asDouble());
+        architecture.inputNormalization.epsilon = static_cast<float>(
+            runtimeValue->require("input_norm_epsilon").asDouble());
+        architecture.postAttentionNormalization.epsilon = static_cast<float>(
+            runtimeValue->require("post_attention_norm_epsilon").asDouble());
+        result.runtimeArchitecture = architecture;
+    }
     for (const auto& tensorValue : routerValue.require("tensors").asArray()) {
         result.router.tensors.push_back({
             asId(tensorValue.require("layer_id"), "router layer_id"),
@@ -397,6 +534,21 @@ ModelManifest ModelManifest::load(const std::filesystem::path& path) {
         value.up = parseProjection(expertValue.require("up"));
         value.down = parseProjection(expertValue.require("down"));
         result.experts.push_back(std::move(value));
+    }
+    if (const auto* layersValue = root.find("layers")) {
+        for (const auto& layerValue : layersValue->asArray()) {
+            ManifestLayerMapping value;
+            value.layerId = asId(layerValue.require("layer_id"), "layer_id");
+            value.queryProjection = parseBinding(layerValue.require("q_proj"));
+            value.keyProjection = parseBinding(layerValue.require("k_proj"));
+            value.valueProjection = parseBinding(layerValue.require("v_proj"));
+            value.outputProjection = parseBinding(layerValue.require("o_proj"));
+            value.inputNormTensor = layerValue.require("input_norm").asString();
+            value.postAttentionNormTensor =
+                layerValue.require("post_attention_norm").asString();
+            value.routerTensor = layerValue.require("router").asString();
+            result.layers.push_back(std::move(value));
+        }
     }
     result.validate();
     return result;

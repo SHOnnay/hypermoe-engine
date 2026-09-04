@@ -22,8 +22,8 @@ public:
     [[nodiscard]] tensor::Tensor execute(
         tensor::TensorView input,
         tensor::TensorView weight) override;
-    [[nodiscard]] std::size_t hiddenDimension() const noexcept;
-    [[nodiscard]] float epsilon() const noexcept;
+    [[nodiscard]] std::size_t hiddenDimension() const noexcept override;
+    [[nodiscard]] float epsilon() const noexcept override;
 
 private:
     std::shared_ptr<tensor::TensorBackend> backend_;

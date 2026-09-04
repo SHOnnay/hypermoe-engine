@@ -19,6 +19,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_set>
 #include <vector>
 
@@ -64,7 +65,7 @@ std::vector<std::byte> bytes(std::size_t size, unsigned char seed) {
 
 std::vector<hypermoe::storage::ExpertBlob> smallBlobs(bool withBlocker = false) {
     std::vector<hypermoe::storage::ExpertBlob> blobs;
-    blobs.push_back({0, 0, 3, bytes(withBlocker ? 4 * 1024 * KiB : 4 * KiB, 11)});
+    blobs.push_back({0, 0, 3, bytes(withBlocker ? 64 * 1024 * KiB : 4 * KiB, 11)});
     blobs.push_back({0, 1, 3, bytes(8 * KiB, 29)});
     blobs.push_back({1, 2, 3, bytes(2 * KiB, 71)});
     return blobs;
@@ -140,6 +141,12 @@ void testDiskLoaderAndTransfers() {
                                      .expertId = 0,
                                      .destination = hypermoe::MemoryTier::Ram,
                                      .priority = 0});
+    while (transfers.pending() != 0 &&
+           blocker.future().wait_for(0ms) != std::future_status::ready) {
+        std::this_thread::yield();
+    }
+    expect(blocker.future().wait_for(0ms) != std::future_status::ready,
+           "priority test blocker is active before queued work is submitted");
     auto low = transfers.submit({.layerId = 0,
                                  .expertId = 1,
                                  .destination = hypermoe::MemoryTier::Vram,

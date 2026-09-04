@@ -20,6 +20,12 @@ bool ExpertCombinationComparisonReport::matches() const noexcept {
                        [](const auto& result) { return result.matches; });
 }
 
+bool ModelLayerComparisonReport::matches() const noexcept {
+    return !layers.empty() &&
+           std::all_of(layers.begin(), layers.end(),
+                       [](const auto& result) { return result.matches; });
+}
+
 NumericalTolerance CorrectnessOracle::toleranceFor(tensor::DType dtype) noexcept {
     switch (dtype) {
     case tensor::DType::FP32: return {1.0e-5F, 1.0e-5F};
@@ -323,6 +329,124 @@ ExpertCombinationComparisonReport CorrectnessOracle::compareExpertCombination(
         }
     }
     report.combinedOutput = compare(actualCombined, expectedCombined, tolerance);
+    return report;
+}
+
+std::vector<float> CorrectnessOracle::applyRoPE(
+    std::span<const float> values,
+    std::size_t tokenCount,
+    std::size_t headCount,
+    std::size_t headDimension,
+    std::size_t positionOffset,
+    float theta) {
+    if (tokenCount == 0 || headCount == 0 || headDimension == 0 ||
+        headDimension % 2 != 0 || !std::isfinite(theta) || theta <= 0.0F ||
+        headCount > std::numeric_limits<std::size_t>::max() / headDimension ||
+        tokenCount > std::numeric_limits<std::size_t>::max() /
+                         (headCount * headDimension) ||
+        values.size() != tokenCount * headCount * headDimension) {
+        throw std::invalid_argument("oracle RoPE dimensions are invalid");
+    }
+    std::vector<float> result(values.begin(), values.end());
+    for (std::size_t token = 0; token < tokenCount; ++token) {
+        for (std::size_t head = 0; head < headCount; ++head) {
+            const auto base = (token * headCount + head) * headDimension;
+            for (std::size_t dimension = 0; dimension < headDimension;
+                 dimension += 2) {
+                const auto angle = static_cast<double>(positionOffset + token) /
+                    std::pow(theta, static_cast<double>(dimension) /
+                                         static_cast<double>(headDimension));
+                const auto first = result[base + dimension];
+                const auto second = result[base + dimension + 1];
+                result[base + dimension] = static_cast<float>(
+                    first * std::cos(angle) - second * std::sin(angle));
+                result[base + dimension + 1] = static_cast<float>(
+                    first * std::sin(angle) + second * std::cos(angle));
+            }
+        }
+    }
+    return result;
+}
+
+std::vector<float> CorrectnessOracle::causalAttention(
+    std::span<const float> query,
+    std::span<const float> key,
+    std::span<const float> value,
+    std::span<const std::uint64_t> keyPositions,
+    std::size_t queryTokenCount,
+    std::size_t headCount,
+    std::size_t keyValueHeadCount,
+    std::size_t headDimension,
+    std::uint64_t queryPositionOffset) {
+    if (queryTokenCount == 0 || headCount == 0 || keyValueHeadCount == 0 ||
+        headDimension == 0 || headCount % keyValueHeadCount != 0 ||
+        query.size() != queryTokenCount * headCount * headDimension ||
+        key.size() != keyPositions.size() * keyValueHeadCount * headDimension ||
+        value.size() != key.size()) {
+        throw std::invalid_argument("oracle attention dimensions are invalid");
+    }
+    std::vector<float> result(query.size(), 0.0F);
+    const auto headsPerKv = headCount / keyValueHeadCount;
+    const auto scale = 1.0 / std::sqrt(static_cast<double>(headDimension));
+    for (std::size_t token = 0; token < queryTokenCount; ++token) {
+        const auto queryPosition = queryPositionOffset + token;
+        for (std::size_t head = 0; head < headCount; ++head) {
+            const auto kvHead = head / headsPerKv;
+            std::vector<double> scores(keyPositions.size(),
+                                       -std::numeric_limits<double>::infinity());
+            double maximum = -std::numeric_limits<double>::infinity();
+            for (std::size_t cached = 0; cached < keyPositions.size(); ++cached) {
+                if (keyPositions[cached] > queryPosition) continue;
+                double dot{};
+                for (std::size_t dimension = 0; dimension < headDimension;
+                     ++dimension) {
+                    dot += query[(token * headCount + head) * headDimension + dimension] *
+                           key[(cached * keyValueHeadCount + kvHead) * headDimension +
+                               dimension];
+                }
+                scores[cached] = dot * scale;
+                maximum = std::max(maximum, scores[cached]);
+            }
+            double denominator{};
+            for (auto& score : scores) {
+                if (std::isfinite(score)) {
+                    score = std::exp(score - maximum);
+                    denominator += score;
+                } else {
+                    score = 0.0;
+                }
+            }
+            if (denominator <= 0.0 || !std::isfinite(denominator)) {
+                throw std::runtime_error("oracle causal attention has no visible key");
+            }
+            for (std::size_t cached = 0; cached < keyPositions.size(); ++cached) {
+                const auto probability = scores[cached] / denominator;
+                for (std::size_t dimension = 0; dimension < headDimension;
+                     ++dimension) {
+                    result[(token * headCount + head) * headDimension + dimension] +=
+                        static_cast<float>(probability *
+                            value[(cached * keyValueHeadCount + kvHead) *
+                                      headDimension + dimension]);
+                }
+            }
+        }
+    }
+    return result;
+}
+
+ModelLayerComparisonReport CorrectnessOracle::compareModelLayers(
+    std::span<const std::vector<float>> actual,
+    std::span<const std::vector<float>> expected,
+    tensor::DType executionDType) {
+    if (actual.size() != expected.size() || actual.empty()) {
+        throw std::invalid_argument("model layer comparison count is invalid");
+    }
+    ModelLayerComparisonReport report;
+    report.layers.reserve(actual.size());
+    const auto tolerance = toleranceFor(executionDType);
+    for (std::size_t layer = 0; layer < actual.size(); ++layer) {
+        report.layers.push_back(compare(actual[layer], expected[layer], tolerance));
+    }
     return report;
 }
 

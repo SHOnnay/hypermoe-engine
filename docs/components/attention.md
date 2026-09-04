@@ -9,10 +9,12 @@ stage.
 `CpuAttention` is the portable FP32 reference implementation. It computes Q/K/V
 through `TensorBackend::matmul`, forms scaled dot-product scores, applies a
 row-wise numerically stable softmax, aggregates the value matrix, and applies the
-output projection. It validates device, dtype, contiguity, ownership lifetime,
+output projection. Phase 13 extends it with causal masking, multiple query heads,
+grouped key/value heads, RoPE, and optional per-layer KV-cache use. It validates
+device, dtype, contiguity, ownership lifetime,
 and every projection dimension before execution.
 
-The reference currently models one attention head and applies no causal mask.
-Those semantics are explicit rather than inferred from Qwen metadata. A future
-CUDA or model-aware attention implementation will implement the same interface;
-the transformer block will not need CUDA-specific logic.
+The two-argument configuration defaults preserve the Phase 12 one-head,
+non-causal behavior. Model runtime supplies explicit head, causal, rotary, layer,
+and sequence-position configuration. A future CUDA implementation will implement
+the same interface; the transformer block needs no CUDA-specific logic.

@@ -1,4 +1,4 @@
-# HyperMoE architecture through Phase 12
+# HyperMoE architecture through Phase 13
 
 The runtime separates durable storage, movement, residency, eviction policy,
 hardware access, and measurement so future model adapters do not own memory
@@ -123,6 +123,26 @@ InferenceContext + hidden-state batch
                          attention residual + MoE output
 ```
 
+Phase 13 lifts that block into a manifest-defined model runtime:
+
+```text
+Qwen artifact → importer → architecture + logical layer mappings
+                              │ offline layout conversion
+                              ▼
+                  packed neutral runtime manifest
+                              │
+                              ▼
+             TransformerModelRuntime (layer 0 … layer N)
+                              │
+          input RMSNorm → causal MHA/GQA + RoPE ↔ KVCache
+                              │ attention residual
+                              ▼
+          post-attention RMSNorm → grouped top-k MoE
+                              │ MoE residual
+                              ▼
+                     next-layer hidden state
+```
+
 ## Components
 
 - `ExpertIndex` parses a versioned, fixed-width little-endian format and builds
@@ -225,14 +245,23 @@ InferenceContext + hidden-state batch
 - `QuantizationPolicy` records validated INT8/Q4/Q8 scale, zero-point, and group
   metadata without implying an optimized kernel.
 - `Attention` and `Norm` are device-neutral layer contracts. `CpuAttention`
-  supplies single-head FP32 Q/K/V, scaled softmax, context, and output projection;
-  `RMSNorm` supplies the CPU reference normalization.
+  supplies FP32 multi-head/grouped-query Q/K/V, causal scaled softmax, context,
+  and output projection; `RMSNorm` supplies the CPU reference normalization.
 - `ExpertBatch` represents all token rows and routing weights assigned to one
   expert. `MoELayer::executeExpertsBatch` exposes grouped execution while
   retaining the legacy single-token and identity-wrapper APIs.
 - `InferenceContext` validates batch/layer dimensions and records routing plus
   execution metadata. `TransformerBlock` composes attention, RMSNorm, grouped
   MoE, and residual addition without backend-specific branches.
+- `models::runtime::ModelArchitecture` validates manifest-derived attention,
+  normalization, routing, expert, and layer dimensions. `ManifestLayerMapping`
+  binds execution roles to neutral tensor names and layouts.
+- `TransformerModelRuntime` resolves owned shared tensors once and executes every
+  mapped block in layer order while retaining per-layer timings, routing, and
+  correctness outputs.
+- `CpuAttention` supports causal multi-head and grouped-query attention. `RoPE`
+  rotates query/key pairs at absolute positions before the per-layer `KVCache`
+  stores keys and values.
 - `ModelImporter` is the architecture-independent artifact boundary.
   `QwenImporter` alone interprets Qwen configuration keys and tensor names,
   including individual Qwen2 projections and fused Qwen3 expert storage.
@@ -291,9 +320,9 @@ addition to tier-independent events.
 ## Deferred intentionally
 
 - GGUF readers and DeepSeek/GLM/Kimi/Mixtral artifact importers
-- Native CUDA router, attention, RMSNorm, grouped gather/scatter, and KV cache
+- Native CUDA router, attention, RMSNorm, RoPE, grouped gather/scatter, and KV cache
 - Direct-storage integrations and unbuffered platform-specific NVMe benchmarks
-- Multi-head/causal attention, positional encoding, and a complete model loop
+- Token embeddings, dense/non-MoE layers, final norm/head, and generation loop
 - Automatic scheduler-driven capacity selection and eviction policy execution
 - Quantized dequantization/GEMM, batched/strided GEMM, FP16 compute, kernel launch
   policy, and CUDA graphs

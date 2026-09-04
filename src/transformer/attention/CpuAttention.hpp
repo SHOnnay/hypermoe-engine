@@ -18,7 +18,8 @@ public:
     [[nodiscard]] tensor::Device device() const noexcept override;
     [[nodiscard]] AttentionResult execute(
         tensor::TensorView hiddenStates,
-        const AttentionWeights& weights) override;
+        const AttentionWeights& weights,
+        const AttentionConfiguration& configuration = {}) override;
 
 private:
     std::shared_ptr<tensor::TensorBackend> backend_;

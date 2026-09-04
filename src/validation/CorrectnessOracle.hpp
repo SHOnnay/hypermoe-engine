@@ -5,6 +5,7 @@
 #include "tensor/DType.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <span>
 #include <vector>
 
@@ -60,6 +61,12 @@ struct ExpertCombinationComparisonReport {
     bool normalizedWeights{};
     std::vector<ComparisonResult> individualOutputs;
     ComparisonResult combinedOutput;
+
+    [[nodiscard]] bool matches() const noexcept;
+};
+
+struct ModelLayerComparisonReport {
+    std::vector<ComparisonResult> layers;
 
     [[nodiscard]] bool matches() const noexcept;
 };
@@ -121,6 +128,27 @@ public:
         std::span<const RoutedExpertOutput> expectedExperts,
         std::span<const float> actualCombined,
         std::span<const float> expectedCombined,
+        tensor::DType executionDType = tensor::DType::FP32);
+    [[nodiscard]] static std::vector<float> applyRoPE(
+        std::span<const float> values,
+        std::size_t tokenCount,
+        std::size_t headCount,
+        std::size_t headDimension,
+        std::size_t positionOffset,
+        float theta);
+    [[nodiscard]] static std::vector<float> causalAttention(
+        std::span<const float> query,
+        std::span<const float> key,
+        std::span<const float> value,
+        std::span<const std::uint64_t> keyPositions,
+        std::size_t queryTokenCount,
+        std::size_t headCount,
+        std::size_t keyValueHeadCount,
+        std::size_t headDimension,
+        std::uint64_t queryPositionOffset);
+    [[nodiscard]] static ModelLayerComparisonReport compareModelLayers(
+        std::span<const std::vector<float>> actual,
+        std::span<const std::vector<float>> expected,
         tensor::DType executionDType = tensor::DType::FP32);
 };
 

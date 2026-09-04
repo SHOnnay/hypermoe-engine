@@ -1,11 +1,11 @@
 # HyperMoE Engine
 
 HyperMoE is a C++20 inference-runtime project for hierarchical Mixture-of-Experts
-memory management across VRAM, pinned RAM, ordinary RAM, and NVMe. Phase 12 adds
-a backend-neutral transformer-block runtime, reference scaled dot-product
-attention and RMSNorm, grouped multi-token top-k expert execution, and an
-independent weighted-combination oracle. There is intentionally no complete
-model loop, tokenizer, server, KV cache, sampling, or custom CUDA kernel.
+memory management across VRAM, pinned RAM, ordinary RAM, and NVMe. Phase 13 adds
+manifest-driven multi-layer execution, causal multi-head/grouped-query attention,
+RoPE, a correctness-first per-layer KV cache, and complete Qwen architecture
+tensor mappings. There is intentionally no tokenizer, generation loop, server,
+sampling, or custom CUDA kernel.
 
 ## Build and run
 
@@ -34,6 +34,7 @@ ctest --test-dir build --output-on-failure
   model_validation_report.json
 ./build/hypermoe_cuda_runtime_benchmark cuda_runtime_report.json
 ./build/hypermoe_transformer_benchmark transformer_report.json
+./build/hypermoe_model_runtime_benchmark model_runtime_report.json
 ```
 
 Enable runtime memory checks with:
@@ -296,3 +297,17 @@ replace the interfaces without adding CUDA branches to transformer code. See
 [transformer runtime](docs/components/transformer-runtime.md),
 [attention](docs/components/attention.md), and
 [MoE layer](docs/components/moe-layer.md).
+
+## Model-aware multi-layer runtime
+
+The v2 manifest now optionally records validated runtime architecture metadata
+and complete logical tensor bindings for each transformer layer. The Qwen
+importer recognizes upstream Q/K/V/O, normalization, router, and expert tensors;
+the offline packer rewrites them into neutral names and `INPUT_OUTPUT` layout.
+`TransformerModelRuntime` consumes only those neutral mappings.
+
+The CPU reference path supports multiple query heads, grouped key/value heads,
+causal masking, RoPE at absolute sequence positions, per-layer KV storage, input
+and post-attention RMSNorm, two residual branches, and grouped top-k MoE
+execution across multiple layers. See [model runtime](docs/components/model-runtime.md),
+[RoPE](docs/components/rope.md), and [KV cache](docs/components/kv-cache.md).

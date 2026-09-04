@@ -1,4 +1,4 @@
-# Design decisions through Phase 12
+# Design decisions through Phase 13
 
 ## Why memory mapping
 
@@ -494,3 +494,42 @@ expert results. The Phase 12 oracle checks selected experts and normalized score
 compares every grouped expert output, independently performs weighted scatter-add,
 and finally compares the batch output. This isolates routing, MLP, and combination
 failures without reusing backend operations.
+
+## Why architecture metadata is separate from model identity
+
+An enum such as `QWEN_MOE` identifies an importer family but cannot safely drive
+tensor execution. Head counts, head width, top-k, normalization epsilon, and RoPE
+theta are validated numerical contracts. `models::runtime::ModelArchitecture`
+therefore derives those values from the manifest and cross-checks them against
+the existing model/router configuration before execution begins.
+
+## Why layer mappings are logical and layout-explicit
+
+Upstream tensor names and matrix orientations belong at the artifact boundary.
+The Qwen importer maps recognized paths to logical roles, and the offline packer
+converts two-dimensional weights to `INPUT_OUTPUT` while rewriting names.
+`TransformerModelRuntime` rejects other layouts instead of silently transposing
+or recognizing a Qwen string during inference.
+
+## Why causal attention and RoPE start on CPU
+
+Masking, grouped-query head selection, absolute positions, and rotary indexing
+can all produce plausible but wrong output. A transparent scalar CPU path and a
+separate oracle establish semantics before cuBLAS batching or fused kernels alter
+execution ordering. CUDA remains an implementation of the same attention and
+tensor interfaces, not a branch in the model runtime.
+
+## Why the first KV cache uses contiguous appends
+
+Generation will require complex page ownership, but accepting overwrite and gap
+semantics now would make position bugs difficult to distinguish from attention
+bugs. The reference cache permits only append-at-current-length per layer and
+returns locked snapshots. This makes behavior deterministic; paging and device
+residency can later preserve the same observable sequence contract.
+
+## Why model execution retains per-layer outputs
+
+Phase 13 prioritizes validation over peak memory use. Retaining layer outputs
+allows an independent oracle to identify the first divergent block rather than
+only comparing the final hidden state. A production execution mode can release
+intermediates once multi-layer correctness is established on target artifacts.

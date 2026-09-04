@@ -13,6 +13,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 
 namespace hypermoe::conversion {
 namespace {
@@ -109,6 +110,7 @@ PackingReport ExpertPacker::pack(const models::ModelManifest& sourceManifest,
         packed.tensors.clear();
         packed.experts.clear();
         packed.router.tensors.clear();
+        packed.layers.clear();
         packed.router.layout = models::TensorLayout::InputOutput;
         std::vector<storage::ExpertRecord> experts;
         std::vector<storage::ProjectionRecord> projections;
@@ -205,6 +207,7 @@ PackingReport ExpertPacker::pack(const models::ModelManifest& sourceManifest,
             ++report.experts;
         }
 
+        std::unordered_map<std::string, std::string> packedRouterNames;
         for (const auto& sourceRouter : sourceManifest.router.tensors) {
             const auto* tensor = sourceManifest.findTensor(sourceRouter.tensorName);
             if (!tensor) throw storage::StorageError("router source is missing");
@@ -230,6 +233,100 @@ PackingReport ExpertPacker::pack(const models::ModelManifest& sourceManifest,
                                       static_cast<std::uint64_t>(converted.bytes.size()),
                                       converted.dtype, converted.shape});
             packed.router.tensors.push_back({sourceRouter.layerId, name});
+            packedRouterNames.emplace(sourceRouter.tensorName, name);
+        }
+        for (const auto& sourceLayer : sourceManifest.layers) {
+            models::ManifestLayerMapping layer;
+            layer.layerId = sourceLayer.layerId;
+            const auto packTensor = [&](const models::ManifestTensorBinding& binding,
+                                        std::string role) {
+                const auto* source = sourceManifest.findTensor(binding.tensorName);
+                if (!source) {
+                    throw storage::StorageError(
+                        "transformer projection source is missing");
+                }
+                models::ProjectionLocation location{
+                    source->name, source->offset, source->size, source->shape,
+                    binding.layout};
+                auto sourceBytes = readRange(artifactRoot, *source, location);
+                report.bytesRead += sourceBytes.size();
+                auto converted = WeightConverter::convert(
+                    sourceBytes, source->shape, source->dtype, binding.layout);
+                if (converted.bytes.size() >
+                        static_cast<std::size_t>(
+                            std::numeric_limits<std::streamsize>::max()) ||
+                    converted.bytes.size() >
+                        std::numeric_limits<std::uint64_t>::max() - cursor) {
+                    throw storage::StorageError(
+                        "packed transformer projection is too large");
+                }
+                const auto name = "layers." + std::to_string(sourceLayer.layerId) +
+                                  "." + role;
+                const auto offset = cursor;
+                output.write(reinterpret_cast<const char*>(converted.bytes.data()),
+                             static_cast<std::streamsize>(converted.bytes.size()));
+                if (!output) {
+                    throw storage::StorageError(
+                        "failed writing transformer projection");
+                }
+                cursor += converted.bytes.size();
+                packed.tensors.push_back(
+                    {name, "experts.bin", offset,
+                     static_cast<std::uint64_t>(converted.bytes.size()),
+                     converted.dtype, converted.shape});
+                return models::ManifestTensorBinding{
+                    name, models::TensorLayout::InputOutput};
+            };
+            const auto packNorm = [&](const std::string& tensorName,
+                                      std::string role) {
+                const auto* source = sourceManifest.findTensor(tensorName);
+                if (!source || source->shape.rank() != 1) {
+                    throw storage::StorageError(
+                        "transformer normalization source is missing or invalid");
+                }
+                models::ProjectionLocation location{
+                    source->name, source->offset, source->size, source->shape,
+                    models::TensorLayout::InputOutput};
+                auto sourceBytes = readRange(artifactRoot, *source, location);
+                report.bytesRead += sourceBytes.size();
+                if (sourceBytes.size() >
+                        static_cast<std::size_t>(
+                            std::numeric_limits<std::streamsize>::max()) ||
+                    sourceBytes.size() >
+                        std::numeric_limits<std::uint64_t>::max() - cursor) {
+                    throw storage::StorageError(
+                        "packed normalization tensor is too large");
+                }
+                const auto name = "layers." + std::to_string(sourceLayer.layerId) +
+                                  "." + role;
+                const auto offset = cursor;
+                output.write(reinterpret_cast<const char*>(sourceBytes.data()),
+                             static_cast<std::streamsize>(sourceBytes.size()));
+                if (!output) {
+                    throw storage::StorageError(
+                        "failed writing normalization tensor");
+                }
+                cursor += sourceBytes.size();
+                packed.tensors.push_back(
+                    {name, "experts.bin", offset,
+                     static_cast<std::uint64_t>(sourceBytes.size()), source->dtype,
+                     source->shape});
+                return name;
+            };
+            layer.queryProjection = packTensor(sourceLayer.queryProjection, "q_proj");
+            layer.keyProjection = packTensor(sourceLayer.keyProjection, "k_proj");
+            layer.valueProjection = packTensor(sourceLayer.valueProjection, "v_proj");
+            layer.outputProjection = packTensor(sourceLayer.outputProjection, "o_proj");
+            layer.inputNormTensor = packNorm(sourceLayer.inputNormTensor, "input_norm");
+            layer.postAttentionNormTensor = packNorm(
+                sourceLayer.postAttentionNormTensor, "post_attention_norm");
+            const auto routerName = packedRouterNames.find(sourceLayer.routerTensor);
+            if (routerName == packedRouterNames.end()) {
+                throw storage::StorageError(
+                    "packed transformer layer router is missing");
+            }
+            layer.routerTensor = routerName->second;
+            packed.layers.push_back(std::move(layer));
         }
         output.close();
         if (!output) throw storage::StorageError("failed closing packed expert data");

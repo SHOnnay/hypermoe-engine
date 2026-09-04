@@ -66,7 +66,15 @@ std::string modelName(const JsonValue& config, const std::filesystem::path& root
 }
 
 struct ParsedTensorName {
-    enum class Kind { Individual, FusedGateUp, FusedDown, Router };
+    enum class Kind {
+        Individual,
+        FusedGateUp,
+        FusedDown,
+        Router,
+        Attention,
+        InputNorm,
+        PostAttentionNorm,
+    };
     Kind kind{};
     std::uint32_t layer{};
     std::optional<std::uint32_t> expert;
@@ -82,6 +90,15 @@ std::optional<ParsedTensorName> parseName(const std::string& name) {
         std::regex::ECMAScript | std::regex::optimize);
     static const std::regex router(
         R"(^model\.layers\.([0-9]+)\.mlp\.gate\.weight$)",
+        std::regex::ECMAScript | std::regex::optimize);
+    static const std::regex attention(
+        R"(^model\.layers\.([0-9]+)\.self_attn\.(q_proj|k_proj|v_proj|o_proj)\.weight$)",
+        std::regex::ECMAScript | std::regex::optimize);
+    static const std::regex inputNorm(
+        R"(^model\.layers\.([0-9]+)\.input_layernorm\.weight$)",
+        std::regex::ECMAScript | std::regex::optimize);
+    static const std::regex postAttentionNorm(
+        R"(^model\.layers\.([0-9]+)\.post_attention_layernorm\.weight$)",
         std::regex::ECMAScript | std::regex::optimize);
     std::smatch match;
     const auto checkedId = [](const std::ssub_match& value) {
@@ -105,6 +122,19 @@ std::optional<ParsedTensorName> parseName(const std::string& name) {
     if (std::regex_match(name, match, router)) {
         return ParsedTensorName{ParsedTensorName::Kind::Router,
                                 checkedId(match[1]), std::nullopt, "router"};
+    }
+    if (std::regex_match(name, match, attention)) {
+        return ParsedTensorName{ParsedTensorName::Kind::Attention,
+                                checkedId(match[1]), std::nullopt, match[2].str()};
+    }
+    if (std::regex_match(name, match, inputNorm)) {
+        return ParsedTensorName{ParsedTensorName::Kind::InputNorm,
+                                checkedId(match[1]), std::nullopt, "input_norm"};
+    }
+    if (std::regex_match(name, match, postAttentionNorm)) {
+        return ParsedTensorName{ParsedTensorName::Kind::PostAttentionNorm,
+                                checkedId(match[1]), std::nullopt,
+                                "post_attention_norm"};
     }
     return std::nullopt;
 }
@@ -198,6 +228,41 @@ models::ModelManifest QwenImporter::inspect(
     manifest.router.layout = TensorLayout::OutputInput;
     manifest.router.config.validate();
 
+    models::runtime::ModelArchitecture runtimeArchitecture;
+    runtimeArchitecture.layerCount = manifest.config.layerCount;
+    runtimeArchitecture.hiddenDimension = manifest.config.hiddenSize;
+    runtimeArchitecture.expertCount = manifest.config.expertCount;
+    runtimeArchitecture.topK = manifest.router.config.topK;
+    runtimeArchitecture.attentionHeads = configJson.find("num_attention_heads")
+        ? requiredSize(configJson, "num_attention_heads") : 1;
+    runtimeArchitecture.keyValueHeads = configJson.find("num_key_value_heads")
+        ? requiredSize(configJson, "num_key_value_heads")
+        : runtimeArchitecture.attentionHeads;
+    if (const auto* headDimension = configJson.find("head_dim")) {
+        const auto value = headDimension->asUInt64();
+        if (value == 0 || value > std::numeric_limits<std::size_t>::max()) {
+            throw MetadataError("Qwen head_dim is zero or too large");
+        }
+        runtimeArchitecture.headDimension = static_cast<std::size_t>(value);
+    } else {
+        if (manifest.config.hiddenSize % runtimeArchitecture.attentionHeads != 0) {
+            throw MetadataError("Qwen hidden size is not divisible by attention heads");
+        }
+        runtimeArchitecture.headDimension =
+            manifest.config.hiddenSize / runtimeArchitecture.attentionHeads;
+    }
+    if (const auto* epsilon = configJson.find("rms_norm_eps")) {
+        runtimeArchitecture.inputNormalization.epsilon =
+            static_cast<float>(epsilon->asDouble());
+        runtimeArchitecture.postAttentionNormalization.epsilon =
+            static_cast<float>(epsilon->asDouble());
+    }
+    if (const auto* theta = configJson.find("rope_theta")) {
+        runtimeArchitecture.ropeTheta = static_cast<float>(theta->asDouble());
+    }
+    runtimeArchitecture.validate();
+    manifest.runtimeArchitecture = runtimeArchitecture;
+
     const auto allTensors = SafeTensors::inspectArtifact(artifact);
     manifest.config.capabilities.quantizedExpertWeights =
         std::any_of(allTensors.begin(), allTensors.end(), [](const auto& value) {
@@ -206,6 +271,7 @@ models::ModelManifest QwenImporter::inspect(
     std::map<std::pair<std::uint32_t, std::uint32_t>, ManifestExpertMapping> individual;
     std::map<std::uint32_t, const ManifestTensor*> fusedGateUp;
     std::map<std::uint32_t, const ManifestTensor*> fusedDown;
+    std::map<std::uint32_t, models::ManifestLayerMapping> layerMappings;
     std::set<std::string> relevantNames;
     for (const auto& tensor : allTensors) {
         const auto parsed = parseName(tensor.name);
@@ -221,6 +287,31 @@ models::ModelManifest QwenImporter::inspect(
                 throw MetadataError("Qwen router tensor shape is incompatible");
             }
             manifest.router.tensors.push_back({parsed->layer, tensor.name});
+            auto& layer = layerMappings[parsed->layer];
+            layer.layerId = parsed->layer;
+            layer.routerTensor = tensor.name;
+        } else if (parsed->kind == ParsedTensorName::Kind::Attention) {
+            auto& layer = layerMappings[parsed->layer];
+            layer.layerId = parsed->layer;
+            models::ManifestTensorBinding binding{
+                tensor.name, TensorLayout::OutputInput};
+            if (parsed->projection == "q_proj") {
+                layer.queryProjection = std::move(binding);
+            } else if (parsed->projection == "k_proj") {
+                layer.keyProjection = std::move(binding);
+            } else if (parsed->projection == "v_proj") {
+                layer.valueProjection = std::move(binding);
+            } else {
+                layer.outputProjection = std::move(binding);
+            }
+        } else if (parsed->kind == ParsedTensorName::Kind::InputNorm) {
+            auto& layer = layerMappings[parsed->layer];
+            layer.layerId = parsed->layer;
+            layer.inputNormTensor = tensor.name;
+        } else if (parsed->kind == ParsedTensorName::Kind::PostAttentionNorm) {
+            auto& layer = layerMappings[parsed->layer];
+            layer.layerId = parsed->layer;
+            layer.postAttentionNormTensor = tensor.name;
         } else if (parsed->kind == ParsedTensorName::Kind::FusedGateUp) {
             if (!fusedGateUp.emplace(parsed->layer, &tensor).second) {
                 throw MetadataError("duplicate Qwen fused gate/up tensor");
@@ -332,6 +423,35 @@ models::ModelManifest QwenImporter::inspect(
     }
     for (const auto& tensor : allTensors) {
         if (relevantNames.contains(tensor.name)) manifest.tensors.push_back(tensor);
+    }
+    const auto hasTransformerMapping = std::any_of(
+        layerMappings.begin(), layerMappings.end(), [](const auto& entry) {
+            const auto& layer = entry.second;
+            return !layer.queryProjection.tensorName.empty() ||
+                   !layer.keyProjection.tensorName.empty() ||
+                   !layer.valueProjection.tensorName.empty() ||
+                   !layer.outputProjection.tensorName.empty() ||
+                   !layer.inputNormTensor.empty() ||
+                   !layer.postAttentionNormTensor.empty();
+        });
+    if (hasTransformerMapping) {
+        for (std::size_t layerId = 0; layerId < manifest.config.layerCount;
+             ++layerId) {
+            const auto found = layerMappings.find(static_cast<std::uint32_t>(layerId));
+            if (found == layerMappings.end()) {
+                throw MetadataError("Qwen transformer layer mapping is missing");
+            }
+            const auto& layer = found->second;
+            if (layer.queryProjection.tensorName.empty() ||
+                layer.keyProjection.tensorName.empty() ||
+                layer.valueProjection.tensorName.empty() ||
+                layer.outputProjection.tensorName.empty() ||
+                layer.inputNormTensor.empty() ||
+                layer.postAttentionNormTensor.empty() || layer.routerTensor.empty()) {
+                throw MetadataError("Qwen transformer layer mapping is incomplete");
+            }
+            manifest.layers.push_back(layer);
+        }
     }
     std::sort(manifest.router.tensors.begin(), manifest.router.tensors.end(),
               [](const auto& left, const auto& right) {
