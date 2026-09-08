@@ -26,6 +26,11 @@ bool ModelLayerComparisonReport::matches() const noexcept {
                        [](const auto& result) { return result.matches; });
 }
 
+bool ForwardComparisonReport::matches() const noexcept {
+    return embeddings.matches && transformerLayers.matches() &&
+           finalNormalization.matches && logits.matches;
+}
+
 NumericalTolerance CorrectnessOracle::toleranceFor(tensor::DType dtype) noexcept {
     switch (dtype) {
     case tensor::DType::FP32: return {1.0e-5F, 1.0e-5F};
@@ -448,6 +453,107 @@ ModelLayerComparisonReport CorrectnessOracle::compareModelLayers(
         report.layers.push_back(compare(actual[layer], expected[layer], tolerance));
     }
     return report;
+}
+
+std::vector<float> CorrectnessOracle::embedding(
+    std::span<const std::uint32_t> tokenIds,
+    std::span<const float> weights,
+    std::size_t vocabularySize,
+    std::size_t hiddenDimension) {
+    if (tokenIds.empty() || vocabularySize == 0 || hiddenDimension == 0 ||
+        vocabularySize > std::numeric_limits<std::size_t>::max() / hiddenDimension ||
+        weights.size() != vocabularySize * hiddenDimension) {
+        throw std::invalid_argument("oracle embedding dimensions are invalid");
+    }
+    std::vector<float> result(tokenIds.size() * hiddenDimension);
+    for (std::size_t token = 0; token < tokenIds.size(); ++token) {
+        if (tokenIds[token] >= vocabularySize) {
+            throw std::out_of_range("oracle token ID exceeds vocabulary");
+        }
+        const auto source = static_cast<std::size_t>(tokenIds[token]) * hiddenDimension;
+        std::copy_n(weights.begin() + static_cast<std::ptrdiff_t>(source),
+                    hiddenDimension,
+                    result.begin() + static_cast<std::ptrdiff_t>(token * hiddenDimension));
+    }
+    return result;
+}
+
+std::vector<float> CorrectnessOracle::rmsNorm(
+    std::span<const float> hiddenStates,
+    std::size_t tokenCount,
+    std::size_t hiddenDimension,
+    std::span<const float> weights,
+    float epsilon) {
+    if (tokenCount == 0 || hiddenDimension == 0 ||
+        tokenCount > std::numeric_limits<std::size_t>::max() / hiddenDimension ||
+        hiddenStates.size() != tokenCount * hiddenDimension ||
+        weights.size() != hiddenDimension || !std::isfinite(epsilon) ||
+        epsilon <= 0.0F) {
+        throw std::invalid_argument("oracle RMSNorm dimensions are invalid");
+    }
+    std::vector<float> result(hiddenStates.size());
+    for (std::size_t token = 0; token < tokenCount; ++token) {
+        double squareSum{};
+        for (std::size_t hidden = 0; hidden < hiddenDimension; ++hidden) {
+            const auto value = hiddenStates[token * hiddenDimension + hidden];
+            squareSum += static_cast<double>(value) * value;
+        }
+        const auto inverse = 1.0 / std::sqrt(
+            squareSum / static_cast<double>(hiddenDimension) + epsilon);
+        for (std::size_t hidden = 0; hidden < hiddenDimension; ++hidden) {
+            result[token * hiddenDimension + hidden] = static_cast<float>(
+                hiddenStates[token * hiddenDimension + hidden] * inverse *
+                weights[hidden]);
+        }
+    }
+    return result;
+}
+
+std::vector<float> CorrectnessOracle::lmHead(
+    std::span<const float> hiddenStates,
+    std::size_t tokenCount,
+    std::size_t hiddenDimension,
+    std::span<const float> weights,
+    std::size_t vocabularySize,
+    bool vocabularyHiddenLayout) {
+    if (tokenCount == 0 || hiddenDimension == 0 || vocabularySize == 0 ||
+        tokenCount > std::numeric_limits<std::size_t>::max() / hiddenDimension ||
+        vocabularySize > std::numeric_limits<std::size_t>::max() / hiddenDimension ||
+        hiddenStates.size() != tokenCount * hiddenDimension ||
+        weights.size() != vocabularySize * hiddenDimension) {
+        throw std::invalid_argument("oracle LM head dimensions are invalid");
+    }
+    std::vector<float> result(tokenCount * vocabularySize);
+    for (std::size_t token = 0; token < tokenCount; ++token) {
+        for (std::size_t vocabulary = 0; vocabulary < vocabularySize; ++vocabulary) {
+            double value{};
+            for (std::size_t hidden = 0; hidden < hiddenDimension; ++hidden) {
+                const auto index = vocabularyHiddenLayout
+                    ? vocabulary * hiddenDimension + hidden
+                    : hidden * vocabularySize + vocabulary;
+                value += hiddenStates[token * hiddenDimension + hidden] * weights[index];
+            }
+            result[token * vocabularySize + vocabulary] = static_cast<float>(value);
+        }
+    }
+    return result;
+}
+
+ForwardComparisonReport CorrectnessOracle::compareForward(
+    std::span<const float> actualEmbeddings,
+    std::span<const float> expectedEmbeddings,
+    std::span<const std::vector<float>> actualLayers,
+    std::span<const std::vector<float>> expectedLayers,
+    std::span<const float> actualFinalNormalization,
+    std::span<const float> expectedFinalNormalization,
+    std::span<const float> actualLogits,
+    std::span<const float> expectedLogits,
+    tensor::DType executionDType) {
+    const auto tolerance = toleranceFor(executionDType);
+    return {compare(actualEmbeddings, expectedEmbeddings, tolerance),
+            compareModelLayers(actualLayers, expectedLayers, executionDType),
+            compare(actualFinalNormalization, expectedFinalNormalization, tolerance),
+            compare(actualLogits, expectedLogits, tolerance)};
 }
 
 } // namespace hypermoe::validation

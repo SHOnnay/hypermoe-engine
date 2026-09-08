@@ -1,4 +1,4 @@
-# HyperMoE architecture through Phase 13
+# HyperMoE architecture through Phase 14
 
 The runtime separates durable storage, movement, residency, eviction policy,
 hardware access, and measurement so future model adapters do not own memory
@@ -143,6 +143,24 @@ Qwen artifact → importer → architecture + logical layer mappings
                      next-layer hidden state
 ```
 
+Phase 14 composes the complete forward-to-logits boundary:
+
+```text
+token IDs → manifest-mapped embedding table → hidden states
+                                             │
+                                             ▼
+                              TransformerModelRuntime
+                                             │ final hidden states
+                                             ▼
+                           manifest-configured final RMSNorm
+                                             │
+                                             ▼
+                     separate LM head or shared embedding storage
+                                             │
+                                             ▼
+                                  [tokens, vocabulary] logits
+```
+
 ## Components
 
 - `ExpertIndex` parses a versioned, fixed-width little-endian format and builds
@@ -259,6 +277,15 @@ Qwen artifact → importer → architecture + logical layer mappings
 - `TransformerModelRuntime` resolves owned shared tensors once and executes every
   mapped block in layer order while retaining per-layer timings, routing, and
   correctness outputs.
+- `Embedding` performs checked CPU FP32 row lookup from a manifest-bound
+  vocabulary-by-hidden table. Token IDs never imply a tokenizer or text format.
+- `FinalNorm` applies the architecture's final RMSNorm epsilon and validated
+  hidden-width scale tensor independently of per-layer normalization.
+- `LMHead` projects final hidden states to vocabulary logits. It accepts the
+  packed hidden-by-vocabulary layout or the vocabulary-by-hidden layout required
+  to alias tied embedding storage.
+- `ModelRuntime` owns no duplicate weights: it resolves non-owning views from the
+  `RuntimeTensorMap`, composes the four forward stages, and reports stage timings.
 - `CpuAttention` supports causal multi-head and grouped-query attention. `RoPE`
   rotates query/key pairs at absolute positions before the per-layer `KVCache`
   stores keys and values.
@@ -322,7 +349,7 @@ addition to tier-independent events.
 - GGUF readers and DeepSeek/GLM/Kimi/Mixtral artifact importers
 - Native CUDA router, attention, RMSNorm, RoPE, grouped gather/scatter, and KV cache
 - Direct-storage integrations and unbuffered platform-specific NVMe benchmarks
-- Token embeddings, dense/non-MoE layers, final norm/head, and generation loop
+- Tokenizer, generation loop, sampling, dense/non-MoE layers, and output bias
 - Automatic scheduler-driven capacity selection and eviction policy execution
 - Quantized dequantization/GEMM, batched/strided GEMM, FP16 compute, kernel launch
   policy, and CUDA graphs

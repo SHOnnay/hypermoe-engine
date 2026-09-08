@@ -27,9 +27,12 @@ struct ModelArchitecture {
     std::size_t headDimension{};
     std::size_t expertCount{};
     std::size_t topK{1};
+    std::size_t vocabularySize{};
+    bool tiedEmbeddings{};
     float ropeTheta{10000.0F};
     NormalizationConfiguration inputNormalization;
     NormalizationConfiguration postAttentionNormalization;
+    NormalizationConfiguration finalNormalization;
 
     void validate() const;
     [[nodiscard]] static ModelArchitecture fromManifest(

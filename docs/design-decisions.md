@@ -533,3 +533,27 @@ Phase 13 prioritizes validation over peak memory use. Retaining layer outputs
 allows an independent oracle to identify the first divergent block rather than
 only comparing the final hidden state. A production execution mode can release
 intermediates once multi-layer correctness is established on target artifacts.
+
+## Why model I/O is a manifest contract
+
+Embedding and output names differ across model families, and tied weights may be
+represented by an omitted LM-head tensor in the source artifact. The importer
+therefore translates those facts into `ManifestModelIO`. The runtime validates
+names, dimensions, layout, and tying once and never recognizes Qwen paths. This
+keeps future GLM, DeepSeek, and Kimi importers outside the execution layer.
+
+## Why tied embeddings keep vocabulary-by-hidden layout
+
+Transposing a tied embedding table into a separate head tensor would double a
+large shared allocation and break the ownership fact expressed by the model.
+The reference LM head can read either matrix orientation, so tied models retain
+one vocabulary-by-hidden owner and two non-owning views. Separate heads are
+transposed offline to hidden-by-vocabulary for the normal backend GEMM contract.
+
+## Why Phase 14 returns intermediate forward tensors
+
+The complete path adds three new numerical boundaries around the existing model
+runtime. Retaining embeddings, layer outputs, final-normalized states, and logits
+lets the independent scalar oracle identify the first mismatch. A later
+generation-oriented execution mode can release these tensors eagerly after
+artifact-level correctness is established.

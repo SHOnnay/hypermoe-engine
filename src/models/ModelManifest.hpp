@@ -75,6 +75,13 @@ struct ManifestLayerMapping {
     std::string routerTensor;
 };
 
+struct ManifestModelIO {
+    std::string tokenEmbeddingTensor;
+    std::string finalNormTensor;
+    ManifestTensorBinding lmHead;
+    bool tiedEmbeddings{};
+};
+
 class ModelManifest {
 public:
     static constexpr std::string_view schemaVersion =
@@ -90,6 +97,7 @@ public:
     std::vector<ManifestTensor> tensors;
     std::vector<ManifestExpertMapping> experts;
     std::vector<ManifestLayerMapping> layers;
+    std::optional<ManifestModelIO> modelIO;
 
     void validate() const;
     [[nodiscard]] const ManifestTensor* findTensor(std::string_view name) const noexcept;

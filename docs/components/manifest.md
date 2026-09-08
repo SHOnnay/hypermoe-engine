@@ -31,3 +31,11 @@ a `layers` array. Each complete layer binds Q/K/V/O projections, input and
 post-attention normalization, and its router tensor by logical role. Matrix
 bindings carry an explicit layout. Existing expert-only v2 manifests remain
 valid; `TransformerModelRuntime` requires the complete extension.
+
+Phase 14 adds optional `vocabulary_size` and `tied_embeddings` architecture
+fields plus a `model_io` object. That object binds `token_embedding`,
+`final_norm`, and an explicit-layout `lm_head`. If present, validation requires
+all three roles and their exact shapes. A tied head must name the same
+vocabulary-by-hidden tensor as the embedding binding. Older expert-only and
+layer-complete v2 manifests remain valid; `ModelRuntime` specifically requires
+the Phase 14 fields.

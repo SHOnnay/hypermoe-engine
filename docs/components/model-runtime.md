@@ -3,7 +3,8 @@
 `models::runtime::ModelArchitecture` is the validated execution description
 derived from a `ModelManifest`. It records layer and hidden dimensions,
 query/key-value head counts, head width, expert count, top-k, RoPE theta, and the
-input/post-attention normalization configurations. Runtime construction rejects
+input/post-attention/final normalization configurations, vocabulary size, and
+embedding tying. Runtime construction rejects
 metadata that disagrees with the manifest's model or router dimensions.
 
 `ManifestLayerMapping` binds logical roles—Q/K/V/O projections, input norm,
@@ -21,3 +22,9 @@ execution timings, and output tensors for correctness inspection.
 The runtime currently accepts already materialized FP32 shared tensors. Loading,
 caching, and precision conversion for non-expert tensors should be unified with
 the hierarchical memory system in a later phase.
+
+`ModelRuntime` is the outer forward coordinator. It accepts token IDs, looks up
+embeddings, delegates all mapped layers to `TransformerModelRuntime`, applies the
+final norm, and projects to `[token_count, vocabulary_size]` logits. It returns
+the stage outputs during this correctness phase so the oracle can localize the
+first divergence.

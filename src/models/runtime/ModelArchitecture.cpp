@@ -26,6 +26,7 @@ void ModelArchitecture::validate() const {
     }
     inputNormalization.validate();
     postAttentionNormalization.validate();
+    finalNormalization.validate();
 }
 
 ModelArchitecture ModelArchitecture::fromManifest(

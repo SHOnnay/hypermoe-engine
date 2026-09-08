@@ -1,11 +1,11 @@
 # HyperMoE Engine
 
 HyperMoE is a C++20 inference-runtime project for hierarchical Mixture-of-Experts
-memory management across VRAM, pinned RAM, ordinary RAM, and NVMe. Phase 13 adds
-manifest-driven multi-layer execution, causal multi-head/grouped-query attention,
-RoPE, a correctness-first per-layer KV cache, and complete Qwen architecture
-tensor mappings. There is intentionally no tokenizer, generation loop, server,
-sampling, or custom CUDA kernel.
+memory management across VRAM, pinned RAM, ordinary RAM, and NVMe. Phase 14 adds
+a manifest-driven token embedding, complete multi-layer forward execution, final
+RMSNorm, tied or separate vocabulary projection, and vocabulary logits. There is
+intentionally no tokenizer, generation loop, server, sampling, or custom CUDA
+kernel.
 
 ## Build and run
 
@@ -35,6 +35,7 @@ ctest --test-dir build --output-on-failure
 ./build/hypermoe_cuda_runtime_benchmark cuda_runtime_report.json
 ./build/hypermoe_transformer_benchmark transformer_report.json
 ./build/hypermoe_model_runtime_benchmark model_runtime_report.json
+./build/hypermoe_forward_benchmark forward_report.json
 ```
 
 Enable runtime memory checks with:
@@ -311,3 +312,18 @@ causal masking, RoPE at absolute sequence positions, per-layer KV storage, input
 and post-attention RMSNorm, two residual branches, and grouped top-k MoE
 execution across multiple layers. See [model runtime](docs/components/model-runtime.md),
 [RoPE](docs/components/rope.md), and [KV cache](docs/components/kv-cache.md).
+
+## Complete forward-to-logits runtime
+
+`ManifestModelIO` binds token embeddings, the final normalization vector, and
+the LM head without exposing source-model paths to execution code. Vocabulary
+size and weight tying are explicit architecture properties. The packer preserves
+the vocabulary-by-hidden embedding table and converts a separate LM head to the
+backend's hidden-by-vocabulary layout. A tied head references the embedding
+tensor directly, so its `TensorView` shares the same owner and bytes.
+
+`ModelRuntime` composes embedding lookup, `TransformerModelRuntime`, final
+RMSNorm, and vocabulary projection and returns logits plus measured timing for
+each stage. Phase 14 executes this complete path on the CPU reference backend;
+CUDA output components are intentionally deferred. See [model forward](docs/components/model-forward.md)
+and [output head](docs/components/output-head.md).

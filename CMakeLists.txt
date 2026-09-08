@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(HyperMoE VERSION 0.13.0 LANGUAGES CXX)
+project(HyperMoE VERSION 0.14.0 LANGUAGES CXX)
 
 option(HYPERMOE_BUILD_TESTS "Build HyperMoE tests" ON)
 option(HYPERMOE_BUILD_BENCHMARKS "Build HyperMoE simulation benchmarks" ON)
@@ -56,6 +56,7 @@ add_library(hypermoe
     src/models/ModelManifest.cpp
     src/models/runtime/ModelArchitecture.cpp
     src/models/runtime/TransformerModelRuntime.cpp
+    src/models/runtime/ModelRuntime.cpp
     src/models/metadata/JsonValue.cpp
     src/models/qwen/QwenMoEAdapter.cpp
     src/importer/SafeTensors.cpp
@@ -76,6 +77,9 @@ add_library(hypermoe
     src/transformer/norm/RMSNorm.cpp
     src/transformer/position/RoPE.cpp
     src/transformer/runtime/TransformerBlock.cpp
+    src/transformer/embedding/Embedding.cpp
+    src/transformer/output/FinalNorm.cpp
+    src/transformer/output/LMHead.cpp
     tools/model_convert/WeightConverter.cpp
     tools/model_convert/ExpertPacker.cpp
     src/validation/CorrectnessOracle.cpp
@@ -174,6 +178,10 @@ if(HYPERMOE_BUILD_TESTS)
     add_executable(hypermoe_phase13_tests tests/phase13_tests.cpp)
     target_link_libraries(hypermoe_phase13_tests PRIVATE HyperMoE::hypermoe)
     add_test(NAME hypermoe_phase13 COMMAND hypermoe_phase13_tests)
+
+    add_executable(hypermoe_phase14_tests tests/phase14_tests.cpp)
+    target_link_libraries(hypermoe_phase14_tests PRIVATE HyperMoE::hypermoe)
+    add_test(NAME hypermoe_phase14 COMMAND hypermoe_phase14_tests)
 endif()
 
 if(HYPERMOE_BUILD_BENCHMARKS)
@@ -230,6 +238,10 @@ if(HYPERMOE_BUILD_BENCHMARKS)
     add_executable(hypermoe_model_runtime_benchmark
         benchmarks/model_runtime/model_runtime_benchmark.cpp)
     target_link_libraries(hypermoe_model_runtime_benchmark PRIVATE HyperMoE::hypermoe)
+
+    add_executable(hypermoe_forward_benchmark
+        benchmarks/forward/forward_benchmark.cpp)
+    target_link_libraries(hypermoe_forward_benchmark PRIVATE HyperMoE::hypermoe)
 
     add_executable(hypermoe_model_inspect
         tools/model_inspect/model_inspect.cpp)

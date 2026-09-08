@@ -329,6 +329,36 @@ void ModelManifest::validate() const {
             }
         }
     }
+    if (modelIO) {
+        if (!runtimeArchitecture || runtimeArchitecture->vocabularySize == 0 ||
+            modelIO->tokenEmbeddingTensor.empty() ||
+            modelIO->finalNormTensor.empty() || modelIO->lmHead.tensorName.empty() ||
+            modelIO->tiedEmbeddings != runtimeArchitecture->tiedEmbeddings) {
+            throw std::invalid_argument("manifest model I/O configuration is incomplete");
+        }
+        const auto embedding = byName.find(modelIO->tokenEmbeddingTensor);
+        const auto finalNorm = byName.find(modelIO->finalNormTensor);
+        const auto lmHead = byName.find(modelIO->lmHead.tensorName);
+        const tensor::Shape embeddingShape{runtimeArchitecture->vocabularySize,
+                                           runtimeArchitecture->hiddenDimension};
+        const auto lmHeadShape = modelIO->lmHead.layout == TensorLayout::InputOutput
+            ? tensor::Shape{runtimeArchitecture->hiddenDimension,
+                            runtimeArchitecture->vocabularySize}
+            : embeddingShape;
+        if (embedding == byName.end() || finalNorm == byName.end() ||
+            lmHead == byName.end() || embedding->second->shape != embeddingShape ||
+            finalNorm->second->shape !=
+                tensor::Shape{runtimeArchitecture->hiddenDimension} ||
+            lmHead->second->shape != lmHeadShape) {
+            throw std::invalid_argument("manifest model I/O tensor shape is incompatible");
+        }
+        if (modelIO->tiedEmbeddings &&
+            (modelIO->tokenEmbeddingTensor != modelIO->lmHead.tensorName ||
+             modelIO->lmHead.layout != TensorLayout::OutputInput)) {
+            throw std::invalid_argument(
+                "tied embeddings must share one vocabulary-by-hidden tensor");
+        }
+    }
 }
 
 const ManifestTensor* ModelManifest::findTensor(std::string_view name) const noexcept {
@@ -383,12 +413,26 @@ std::string ModelManifest::toJson() const {
                << runtimeArchitecture->attentionHeads
                << ",\"key_value_heads\":" << runtimeArchitecture->keyValueHeads
                << ",\"head_dimension\":" << runtimeArchitecture->headDimension
+               << ",\"vocabulary_size\":" << runtimeArchitecture->vocabularySize
+               << ",\"tied_embeddings\":"
+               << (runtimeArchitecture->tiedEmbeddings ? "true" : "false")
                << ",\"rope_theta\":" << runtimeArchitecture->ropeTheta
                << ",\"input_norm_epsilon\":"
                << runtimeArchitecture->inputNormalization.epsilon
                << ",\"post_attention_norm_epsilon\":"
                << runtimeArchitecture->postAttentionNormalization.epsilon
+               << ",\"final_norm_epsilon\":"
+               << runtimeArchitecture->finalNormalization.epsilon
                << "},\n";
+    }
+    if (modelIO) {
+        output << "  \"model_io\": {\"token_embedding\":\""
+               << escapeJson(modelIO->tokenEmbeddingTensor)
+               << "\",\"final_norm\":\"" << escapeJson(modelIO->finalNormTensor)
+               << "\",\"lm_head\":";
+        writeBinding(output, modelIO->lmHead);
+        output << ",\"tied_embeddings\":"
+               << (modelIO->tiedEmbeddings ? "true" : "false") << "},\n";
     }
     output << "  \"router\": {\"expert_count\":" << router.config.expertCount
            << ",\"top_k\":" << router.config.topK
@@ -501,6 +545,12 @@ ModelManifest ModelManifest::load(const std::filesystem::path& path) {
             runtimeValue->require("key_value_heads"), "key_value_heads");
         architecture.headDimension = asSize(
             runtimeValue->require("head_dimension"), "head_dimension");
+        if (const auto* vocabularySize = runtimeValue->find("vocabulary_size")) {
+            architecture.vocabularySize = asSize(*vocabularySize, "vocabulary_size");
+        }
+        if (const auto* tied = runtimeValue->find("tied_embeddings")) {
+            architecture.tiedEmbeddings = tied->asBool();
+        }
         architecture.expertCount = result.config.expertCount;
         architecture.topK = result.router.config.topK;
         architecture.ropeTheta = static_cast<float>(
@@ -509,7 +559,18 @@ ModelManifest ModelManifest::load(const std::filesystem::path& path) {
             runtimeValue->require("input_norm_epsilon").asDouble());
         architecture.postAttentionNormalization.epsilon = static_cast<float>(
             runtimeValue->require("post_attention_norm_epsilon").asDouble());
+        if (const auto* finalEpsilon = runtimeValue->find("final_norm_epsilon")) {
+            architecture.finalNormalization.epsilon =
+                static_cast<float>(finalEpsilon->asDouble());
+        }
         result.runtimeArchitecture = architecture;
+    }
+    if (const auto* modelIO = root.find("model_io")) {
+        result.modelIO = ManifestModelIO{
+            modelIO->require("token_embedding").asString(),
+            modelIO->require("final_norm").asString(),
+            parseBinding(modelIO->require("lm_head")),
+            modelIO->require("tied_embeddings").asBool()};
     }
     for (const auto& tensorValue : routerValue.require("tensors").asArray()) {
         result.router.tensors.push_back({

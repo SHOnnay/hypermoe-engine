@@ -233,6 +233,16 @@ models::ModelManifest QwenImporter::inspect(
     runtimeArchitecture.hiddenDimension = manifest.config.hiddenSize;
     runtimeArchitecture.expertCount = manifest.config.expertCount;
     runtimeArchitecture.topK = manifest.router.config.topK;
+    if (const auto* vocabularySize = configJson.find("vocab_size")) {
+        const auto value = vocabularySize->asUInt64();
+        if (value == 0 || value > std::numeric_limits<std::size_t>::max()) {
+            throw MetadataError("Qwen vocab_size is zero or too large");
+        }
+        runtimeArchitecture.vocabularySize = static_cast<std::size_t>(value);
+    }
+    if (const auto* tied = configJson.find("tie_word_embeddings")) {
+        runtimeArchitecture.tiedEmbeddings = tied->asBool();
+    }
     runtimeArchitecture.attentionHeads = configJson.find("num_attention_heads")
         ? requiredSize(configJson, "num_attention_heads") : 1;
     runtimeArchitecture.keyValueHeads = configJson.find("num_key_value_heads")
@@ -256,6 +266,8 @@ models::ModelManifest QwenImporter::inspect(
             static_cast<float>(epsilon->asDouble());
         runtimeArchitecture.postAttentionNormalization.epsilon =
             static_cast<float>(epsilon->asDouble());
+        runtimeArchitecture.finalNormalization.epsilon =
+            static_cast<float>(epsilon->asDouble());
     }
     if (const auto* theta = configJson.find("rope_theta")) {
         runtimeArchitecture.ropeTheta = static_cast<float>(theta->asDouble());
@@ -273,7 +285,25 @@ models::ModelManifest QwenImporter::inspect(
     std::map<std::uint32_t, const ManifestTensor*> fusedDown;
     std::map<std::uint32_t, models::ManifestLayerMapping> layerMappings;
     std::set<std::string> relevantNames;
+    const ManifestTensor* tokenEmbedding{};
+    const ManifestTensor* finalNorm{};
+    const ManifestTensor* lmHead{};
     for (const auto& tensor : allTensors) {
+        if (tensor.name == "model.embed_tokens.weight") {
+            tokenEmbedding = &tensor;
+            relevantNames.insert(tensor.name);
+            continue;
+        }
+        if (tensor.name == "model.norm.weight") {
+            finalNorm = &tensor;
+            relevantNames.insert(tensor.name);
+            continue;
+        }
+        if (tensor.name == "lm_head.weight") {
+            lmHead = &tensor;
+            relevantNames.insert(tensor.name);
+            continue;
+        }
         const auto parsed = parseName(tensor.name);
         if (!parsed) continue;
         if (parsed->layer >= manifest.config.layerCount) {
@@ -452,6 +482,27 @@ models::ModelManifest QwenImporter::inspect(
             }
             manifest.layers.push_back(layer);
         }
+    }
+    const auto hasAnyModelIO = tokenEmbedding || finalNorm || lmHead;
+    if (hasAnyModelIO) {
+        if (runtimeArchitecture.vocabularySize == 0 || !tokenEmbedding || !finalNorm ||
+            (!runtimeArchitecture.tiedEmbeddings && !lmHead)) {
+            throw MetadataError("Qwen model output mapping is incomplete");
+        }
+        const tensor::Shape embeddingShape{runtimeArchitecture.vocabularySize,
+                                           runtimeArchitecture.hiddenDimension};
+        if (tokenEmbedding->shape != embeddingShape ||
+            finalNorm->shape != tensor::Shape{runtimeArchitecture.hiddenDimension} ||
+            (lmHead && lmHead->shape != embeddingShape)) {
+            throw MetadataError("Qwen model output tensor shape is incompatible");
+        }
+        const auto headName = runtimeArchitecture.tiedEmbeddings
+            ? tokenEmbedding->name
+            : lmHead->name;
+        manifest.modelIO = models::ManifestModelIO{
+            tokenEmbedding->name, finalNorm->name,
+            {headName, TensorLayout::OutputInput},
+            runtimeArchitecture.tiedEmbeddings};
     }
     std::sort(manifest.router.tensors.begin(), manifest.router.tensors.end(),
               [](const auto& left, const auto& right) {

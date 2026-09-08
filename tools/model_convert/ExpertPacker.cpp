@@ -111,6 +111,7 @@ PackingReport ExpertPacker::pack(const models::ModelManifest& sourceManifest,
         packed.experts.clear();
         packed.router.tensors.clear();
         packed.layers.clear();
+        packed.modelIO.reset();
         packed.router.layout = models::TensorLayout::InputOutput;
         std::vector<storage::ExpertRecord> experts;
         std::vector<storage::ProjectionRecord> projections;
@@ -144,6 +145,10 @@ PackingReport ExpertPacker::pack(const models::ModelManifest& sourceManifest,
                 if (!tensor) throw storage::StorageError("projection source is missing");
                 auto bytes = readRange(artifactRoot, *tensor, location);
                 report.bytesRead += bytes.size();
+                if (location.shape.rank() != 2) {
+                    throw storage::StorageError(
+                        "expert projection is not rank two: " + location.tensorName);
+                }
                 auto converted = WeightConverter::convert(
                     bytes, location.shape, tensor->dtype, location.layout);
                 if (expertBytes.size() >
@@ -215,6 +220,10 @@ PackingReport ExpertPacker::pack(const models::ModelManifest& sourceManifest,
                                                 tensor->shape, sourceManifest.router.layout};
             auto bytes = readRange(artifactRoot, *tensor, location);
             report.bytesRead += bytes.size();
+            if (tensor->shape.rank() != 2) {
+                throw storage::StorageError(
+                    "router tensor is not rank two: " + tensor->name);
+            }
             auto converted = WeightConverter::convert(bytes, tensor->shape, tensor->dtype,
                                                        sourceManifest.router.layout);
             const auto routerOffset = cursor;
@@ -250,6 +259,10 @@ PackingReport ExpertPacker::pack(const models::ModelManifest& sourceManifest,
                     binding.layout};
                 auto sourceBytes = readRange(artifactRoot, *source, location);
                 report.bytesRead += sourceBytes.size();
+                if (source->shape.rank() != 2) {
+                    throw storage::StorageError(
+                        "transformer projection is not rank two: " + source->name);
+                }
                 auto converted = WeightConverter::convert(
                     sourceBytes, source->shape, source->dtype, binding.layout);
                 if (converted.bytes.size() >
@@ -327,6 +340,71 @@ PackingReport ExpertPacker::pack(const models::ModelManifest& sourceManifest,
             }
             layer.routerTensor = routerName->second;
             packed.layers.push_back(std::move(layer));
+        }
+        if (sourceManifest.modelIO) {
+            const auto appendTensor = [&](const models::ManifestTensor& source,
+                                          models::TensorLayout layout,
+                                          std::string name) {
+                models::ProjectionLocation location{
+                    source.name, source.offset, source.size, source.shape, layout};
+                auto sourceBytes = readRange(artifactRoot, source, location);
+                report.bytesRead += sourceBytes.size();
+                ConvertedWeight converted;
+                if (source.shape.rank() == 1) {
+                    converted.bytes = std::move(sourceBytes);
+                    converted.shape = source.shape;
+                    converted.dtype = source.dtype;
+                    converted.layout = models::TensorLayout::InputOutput;
+                } else {
+                    converted = WeightConverter::convert(
+                        sourceBytes, source.shape, source.dtype, layout);
+                }
+                if (converted.bytes.size() >
+                        static_cast<std::size_t>(
+                            std::numeric_limits<std::streamsize>::max()) ||
+                    converted.bytes.size() >
+                        std::numeric_limits<std::uint64_t>::max() - cursor) {
+                    throw storage::StorageError("packed model I/O tensor is too large");
+                }
+                const auto offset = cursor;
+                output.write(reinterpret_cast<const char*>(converted.bytes.data()),
+                             static_cast<std::streamsize>(converted.bytes.size()));
+                if (!output) {
+                    throw storage::StorageError("failed writing packed model I/O tensor");
+                }
+                cursor += converted.bytes.size();
+                packed.tensors.push_back(
+                    {name, "experts.bin", offset,
+                     static_cast<std::uint64_t>(converted.bytes.size()),
+                     converted.dtype, converted.shape});
+                return name;
+            };
+            const auto* embedding = sourceManifest.findTensor(
+                sourceManifest.modelIO->tokenEmbeddingTensor);
+            const auto* finalNorm = sourceManifest.findTensor(
+                sourceManifest.modelIO->finalNormTensor);
+            const auto* sourceHead = sourceManifest.findTensor(
+                sourceManifest.modelIO->lmHead.tensorName);
+            if (!embedding || !finalNorm || !sourceHead) {
+                throw storage::StorageError("model I/O source tensor is missing");
+            }
+            const auto embeddingName = appendTensor(
+                *embedding, models::TensorLayout::InputOutput,
+                "model.token_embedding");
+            const auto normName = appendTensor(
+                *finalNorm, models::TensorLayout::InputOutput, "model.final_norm");
+            models::ManifestTensorBinding headBinding;
+            if (sourceManifest.modelIO->tiedEmbeddings) {
+                headBinding = {embeddingName, models::TensorLayout::OutputInput};
+            } else {
+                headBinding = {
+                    appendTensor(*sourceHead, sourceManifest.modelIO->lmHead.layout,
+                                 "model.lm_head"),
+                    models::TensorLayout::InputOutput};
+            }
+            packed.modelIO = models::ManifestModelIO{
+                embeddingName, normName, std::move(headBinding),
+                sourceManifest.modelIO->tiedEmbeddings};
         }
         output.close();
         if (!output) throw storage::StorageError("failed closing packed expert data");

@@ -71,6 +71,15 @@ struct ModelLayerComparisonReport {
     [[nodiscard]] bool matches() const noexcept;
 };
 
+struct ForwardComparisonReport {
+    ComparisonResult embeddings;
+    ModelLayerComparisonReport transformerLayers;
+    ComparisonResult finalNormalization;
+    ComparisonResult logits;
+
+    [[nodiscard]] bool matches() const noexcept;
+};
+
 class CorrectnessOracle {
 public:
     [[nodiscard]] static NumericalTolerance toleranceFor(tensor::DType dtype) noexcept;
@@ -149,6 +158,34 @@ public:
     [[nodiscard]] static ModelLayerComparisonReport compareModelLayers(
         std::span<const std::vector<float>> actual,
         std::span<const std::vector<float>> expected,
+        tensor::DType executionDType = tensor::DType::FP32);
+    [[nodiscard]] static std::vector<float> embedding(
+        std::span<const std::uint32_t> tokenIds,
+        std::span<const float> vocabularyHiddenWeights,
+        std::size_t vocabularySize,
+        std::size_t hiddenDimension);
+    [[nodiscard]] static std::vector<float> rmsNorm(
+        std::span<const float> hiddenStates,
+        std::size_t tokenCount,
+        std::size_t hiddenDimension,
+        std::span<const float> weights,
+        float epsilon);
+    [[nodiscard]] static std::vector<float> lmHead(
+        std::span<const float> hiddenStates,
+        std::size_t tokenCount,
+        std::size_t hiddenDimension,
+        std::span<const float> weights,
+        std::size_t vocabularySize,
+        bool vocabularyHiddenLayout);
+    [[nodiscard]] static ForwardComparisonReport compareForward(
+        std::span<const float> actualEmbeddings,
+        std::span<const float> expectedEmbeddings,
+        std::span<const std::vector<float>> actualLayers,
+        std::span<const std::vector<float>> expectedLayers,
+        std::span<const float> actualFinalNormalization,
+        std::span<const float> expectedFinalNormalization,
+        std::span<const float> actualLogits,
+        std::span<const float> expectedLogits,
         tensor::DType executionDType = tensor::DType::FP32);
 };
 
