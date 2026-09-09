@@ -143,6 +143,9 @@ void validatePath(const std::filesystem::path& path) {
 std::uint64_t requiredBytes(const tensor::Shape& shape, tensor::DType dtype) {
     const auto elements = shape.storageElementCount();
     const auto width = tensor::sizeOf(dtype);
+    if (width == 0) {
+        throw std::invalid_argument("manifest tensor dtype is invalid");
+    }
     if (elements > std::numeric_limits<std::uint64_t>::max() / width) {
         throw std::overflow_error("manifest tensor size overflow");
     }
@@ -161,6 +164,9 @@ void ModelManifest::validate() const {
         throw std::invalid_argument("manifest model dimensions must be nonzero");
     }
     router.config.validate();
+    if (!isValid(router.layout)) {
+        throw std::invalid_argument("manifest router tensor layout is invalid");
+    }
     if (router.config.expertCount != config.expertCount) {
         throw std::invalid_argument("manifest router expert count disagrees with model");
     }
@@ -217,6 +223,9 @@ void ModelManifest::validate() const {
     std::unordered_map<std::uint32_t, std::size_t> expertsPerLayer;
     const auto validateProjection = [&](const ProjectionLocation& projection,
                                         bool down) {
+        if (!isValid(projection.layout)) {
+            throw std::invalid_argument("expert projection layout is invalid");
+        }
         const auto found = byName.find(projection.tensorName);
         if (found == byName.end()) {
             throw std::invalid_argument("expert projection references an unknown tensor");
@@ -279,6 +288,9 @@ void ModelManifest::validate() const {
         std::set<std::uint32_t> mappedLayers;
         const auto validateBinding = [&](const ManifestTensorBinding& binding,
                                          const tensor::Shape& inputOutputShape) {
+            if (!isValid(binding.layout)) {
+                throw std::invalid_argument("transformer projection layout is invalid");
+            }
             const auto found = byName.find(binding.tensorName);
             if (found == byName.end()) {
                 throw std::invalid_argument(
@@ -335,6 +347,9 @@ void ModelManifest::validate() const {
             modelIO->finalNormTensor.empty() || modelIO->lmHead.tensorName.empty() ||
             modelIO->tiedEmbeddings != runtimeArchitecture->tiedEmbeddings) {
             throw std::invalid_argument("manifest model I/O configuration is incomplete");
+        }
+        if (!isValid(modelIO->lmHead.layout)) {
+            throw std::invalid_argument("manifest LM head layout is invalid");
         }
         const auto embedding = byName.find(modelIO->tokenEmbeddingTensor);
         const auto finalNorm = byName.find(modelIO->finalNormTensor);

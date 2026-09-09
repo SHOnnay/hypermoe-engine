@@ -1,8 +1,10 @@
 #include "storage/ExpertIndex.hpp"
 
+#include "hypermoe/experts/expert.hpp"
 #include "tensor/DType.hpp"
 
 #include <array>
+#include <climits>
 #include <fstream>
 #include <limits>
 #include <string>
@@ -11,6 +13,8 @@
 
 namespace hypermoe::storage {
 namespace {
+
+static_assert(CHAR_BIT == 8, "HyperMoE binary formats require 8-bit bytes");
 
 constexpr std::array<char, 8> kMagic{'H', 'M', 'O', 'E', 'I', 'D', 'X', '\0'};
 constexpr std::uint32_t kEndianMarker = 0x01020304U;
@@ -241,8 +245,11 @@ void ExpertIndex::rebuildLookup() {
     lookup_.reserve(records_.size());
     for (std::size_t index = 0; index < records_.size(); ++index) {
         const auto& record = records_[index];
-        if (record.size == 0) {
-            throw StorageError("expert index contains a zero-sized record");
+        if (record.size == 0 ||
+            !hypermoe::isValid(
+                static_cast<QuantizationType>(record.quantization_type))) {
+            throw StorageError(
+                "expert index contains an invalid size or quantization code");
         }
         if (record.offset > std::numeric_limits<std::uint64_t>::max() - record.size) {
             throw StorageError("expert index record range overflows");
@@ -256,7 +263,7 @@ void ExpertIndex::rebuildLookup() {
          ++projectionIndex) {
         const auto& projection = projections_[projectionIndex];
         if (projection.size == 0 || projection.rank == 0 || projection.rank > 4 ||
-            projection.dtype > static_cast<std::uint32_t>(tensor::DType::INT8) ||
+            !tensor::isValid(static_cast<tensor::DType>(projection.dtype)) ||
             projection.reserved != 0 || projection.trailing_reserved != 0 ||
             static_cast<std::uint32_t>(projection.projection_type) >
                 static_cast<std::uint32_t>(ProjectionType::Down)) {

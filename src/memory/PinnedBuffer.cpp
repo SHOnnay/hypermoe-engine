@@ -57,7 +57,13 @@ std::byte* PinnedBuffer::data() noexcept { return data_; }
 const std::byte* PinnedBuffer::data() const noexcept { return data_; }
 std::size_t PinnedBuffer::size() const noexcept { return size_; }
 bool PinnedBuffer::isPinned() const noexcept { return pinned_; }
-std::span<std::byte> PinnedBuffer::bytes() noexcept { return {data_, size_}; }
-std::span<const std::byte> PinnedBuffer::bytes() const noexcept { return {data_, size_}; }
+std::span<std::byte> PinnedBuffer::bytes() noexcept {
+    return data_ == nullptr ? std::span<std::byte>{}
+                            : std::span<std::byte>{data_, size_};
+}
+std::span<const std::byte> PinnedBuffer::bytes() const noexcept {
+    return data_ == nullptr ? std::span<const std::byte>{}
+                            : std::span<const std::byte>{data_, size_};
+}
 
 } // namespace hypermoe

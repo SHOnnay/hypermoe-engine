@@ -99,6 +99,7 @@ void CpuBackend::copy(void* destination,
                       const void* source,
                       std::size_t sizeBytes,
                       bool toDevice) {
+    if (sizeBytes == 0) return;
     if ((destination == nullptr || source == nullptr) && sizeBytes != 0) {
         throw std::invalid_argument("CPU copy received a null pointer");
     }

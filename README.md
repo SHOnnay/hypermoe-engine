@@ -7,6 +7,12 @@ RMSNorm, tied or separate vocabulary projection, and vocabulary logits. There is
 intentionally no tokenizer, generation loop, server, sampling, or custom CUDA
 kernel.
 
+Phase 14.5 hardens the same runtime contracts across 64-bit little-endian
+Windows, Linux, and macOS targets. It adds explicit wire-enum values, alignment
+validation for external tensor storage, safer empty/moved buffer behavior,
+portable index regression vectors, and CMake capability diagnostics. It does
+not add inference features or alter scheduler policy.
+
 ## Build and run
 
 ```sh
@@ -53,6 +59,21 @@ runtime target still builds and uses `CpuBackend`. To force a CPU-only build:
 ```sh
 cmake -S . -B build-cpu -DHYPERMOE_ENABLE_CUDA=OFF
 ```
+
+On Windows, configure an x64 build from a Visual Studio developer shell:
+
+```powershell
+cmake -S . -B build -A x64 -DHYPERMOE_ENABLE_CUDA=ON
+cmake --build build --config Release --parallel
+ctest --test-dir build -C Release --output-on-failure
+```
+
+CMake checks the C++20 standard library, 64-bit pointer width, 8-bit bytes, and
+little-endian byte order before targets are created. `HYPERMOE_ENABLE_SANITIZERS`
+enables ASan and UBSan with Apple Clang, Clang, or GCC; MSVC enables ASan and
+prints that UBSan is unavailable. `HYPERMOE_WARNINGS_AS_ERRORS=ON` is available
+for CI once every compiler's warning baseline is clean. See
+[platform support](docs/components/platform-support.md).
 
 The Phase 1 simulator accepts `--requests`, `--seed`, `--vram-mib`, and
 `--ram-mib`. The Phase 2 simulator accepts `--tokens`, `--seed`, `--read-mode`

@@ -38,7 +38,7 @@ MappedFile& MappedFile::operator=(MappedFile&& other) noexcept {
     }
     close();
 #ifdef _WIN32
-    fileHandle_ = std::exchange(other.fileHandle_, reinterpret_cast<void*>(-1));
+    fileHandle_ = std::exchange(other.fileHandle_, nullptr);
     mappingHandle_ = std::exchange(other.mappingHandle_, nullptr);
 #else
     fileDescriptor_ = std::exchange(other.fileDescriptor_, -1);
@@ -114,10 +114,10 @@ void MappedFile::close() noexcept {
     if (mappingHandle_ != nullptr) {
         CloseHandle(mappingHandle_);
     }
-    if (fileHandle_ != reinterpret_cast<void*>(-1)) {
+    if (fileHandle_ != nullptr) {
         CloseHandle(fileHandle_);
     }
-    fileHandle_ = reinterpret_cast<void*>(-1);
+    fileHandle_ = nullptr;
     mappingHandle_ = nullptr;
 #else
     if (data_ != nullptr) {
@@ -141,7 +141,8 @@ std::size_t MappedFile::size() const noexcept {
 }
 
 std::span<const std::byte> MappedFile::bytes() const noexcept {
-    return {data_, size_};
+    return data_ == nullptr ? std::span<const std::byte>{}
+                            : std::span<const std::byte>{data_, size_};
 }
 
 std::span<const std::byte>

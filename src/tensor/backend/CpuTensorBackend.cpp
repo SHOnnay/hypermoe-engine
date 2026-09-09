@@ -109,6 +109,9 @@ void CpuTensorBackend::matmul(TensorView left,
         outputDims[1] != columns) {
         throw std::invalid_argument("CPU matmul dimensions are incompatible");
     }
+    if (left.data() == output.data() || right.data() == output.data()) {
+        throw std::invalid_argument("CPU matmul output cannot alias an input");
+    }
 
     const auto start = std::chrono::steady_clock::now();
     const auto* leftData = static_cast<const float*>(left.data());

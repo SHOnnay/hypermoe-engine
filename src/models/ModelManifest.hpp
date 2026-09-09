@@ -14,13 +14,22 @@
 
 namespace hypermoe::models {
 
-enum class TensorLayout {
-    InputOutput,
-    OutputInput,
+enum class TensorLayout : std::uint32_t {
+    InputOutput = 0,
+    OutputInput = 1,
 };
 
+[[nodiscard]] constexpr bool isValid(TensorLayout layout) noexcept {
+    return layout == TensorLayout::InputOutput ||
+           layout == TensorLayout::OutputInput;
+}
+
 [[nodiscard]] constexpr std::string_view toString(TensorLayout layout) noexcept {
-    return layout == TensorLayout::InputOutput ? "INPUT_OUTPUT" : "OUTPUT_INPUT";
+    switch (layout) {
+    case TensorLayout::InputOutput: return "INPUT_OUTPUT";
+    case TensorLayout::OutputInput: return "OUTPUT_INPUT";
+    }
+    return "UNKNOWN";
 }
 
 struct ManifestTensor {

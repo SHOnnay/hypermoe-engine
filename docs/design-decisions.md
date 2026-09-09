@@ -557,3 +557,33 @@ runtime. Retaining embeddings, layer outputs, final-normalized states, and logit
 lets the independent scalar oracle identify the first mismatch. A later
 generation-oriented execution mode can release these tensors eagerly after
 artifact-level correctness is established.
+
+## Why supported artifacts use an explicit platform contract
+
+`experts.index` is serialized field-by-field with fixed-width unsigned integers
+in little-endian order; no C++ structure is written to disk. SafeTensors and
+packed tensor payloads are also little-endian. Rather than silently reinterpret
+those bytes on an unsupported host, configuration now requires 8-bit bytes,
+64-bit addressing, and native little-endian order. This covers current x64 and
+Apple Silicon targets and leaves a clear future byte-swap boundary.
+
+Enum values that cross storage or manifest boundaries now have explicit
+underlying values, while validation rejects unknown values. This prevents a
+compiler's enum representation or a corrupted numeric code from becoming an
+unchecked array index or tensor interpretation.
+
+## Why external tensor storage is alignment-checked
+
+CPU reference kernels access tensor data through typed FP32/FP16 pointers.
+Unaligned access is tolerated by some x86 instructions but is not a portable C++
+contract and can fail on other architectures. Tensor and TensorView construction
+therefore validates natural dtype alignment once, before any kernel receives the
+pointer. CUDA allocations already exceed these alignment requirements.
+
+## Why portability hardening does not alter scheduling
+
+Windows runtime debugging is being performed independently against the same
+scheduler and residency behavior. Phase 14.5 restricts changes to platform
+contracts, storage validation, tensor safety, and build configuration so results
+from that work remain attributable. Scheduler and memory-policy redesigns are
+explicitly outside this phase.

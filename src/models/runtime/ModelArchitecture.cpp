@@ -9,8 +9,10 @@
 namespace hypermoe::models::runtime {
 
 void NormalizationConfiguration::validate() const {
-    if (!std::isfinite(epsilon) || epsilon <= 0.0F) {
-        throw std::invalid_argument("normalization epsilon must be positive and finite");
+    if (kind != NormalizationKind::RMSNorm || !std::isfinite(epsilon) ||
+        epsilon <= 0.0F) {
+        throw std::invalid_argument(
+            "normalization kind or epsilon is invalid");
     }
 }
 

@@ -161,6 +161,19 @@ token IDs → manifest-mapped embedding table → hidden states
                                   [tokens, vocabulary] logits
 ```
 
+Phase 14.5 adds a portability boundary beneath those components rather than a
+new execution stage:
+
+```text
+validated 64-bit little-endian platform contract
+        │
+        ├── fixed-width index fields; no struct serialization
+        ├── checked filesystem ranges and moved mmap ownership
+        ├── dtype-aligned tensor storage and lifetime-checked views
+        ├── explicit enum wire values and invalid-value rejection
+        └── optional CUDA/cuBLAS capability discovery
+```
+
 ## Components
 
 - `ExpertIndex` parses a versioned, fixed-width little-endian format and builds
@@ -322,6 +335,14 @@ token IDs → manifest-mapped embedding table → hidden states
   GPU-utilization observations.
 - `HardwareInfo` reports CPU, logical cores, RAM, available storage, CUDA
   build/runtime state, GPU name, VRAM, runtime version, and driver version.
+- The CMake platform gate requires C++20 library support, a 64-bit target,
+  8-bit bytes, and little-endian byte order. These are explicit packed-artifact
+  compatibility requirements rather than implicit host assumptions.
+- Tensor owners and views reject storage that is not naturally aligned for its
+  dtype. CPU GEMM rejects input/output aliasing exactly as the CUDA backend does.
+- The Windows mapped-file implementation uses `nullptr` as its internal closed
+  state; moved and closed mappings expose empty spans without sentinel pointer
+  arithmetic.
 
 ## Ownership and synchronization
 

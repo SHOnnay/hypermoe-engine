@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 
 namespace hypermoe::models {
 class ModelManifest;
@@ -8,8 +9,8 @@ class ModelManifest;
 
 namespace hypermoe::models::runtime {
 
-enum class NormalizationKind {
-    RMSNorm,
+enum class NormalizationKind : std::uint8_t {
+    RMSNorm = 0,
 };
 
 struct NormalizationConfiguration {

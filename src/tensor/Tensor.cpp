@@ -1,12 +1,32 @@
 #include "tensor/Tensor.hpp"
 
 #include "tensor/TensorView.hpp"
+#include "tensor/TensorError.hpp"
 
+#include <cstdint>
 #include <limits>
 #include <stdexcept>
 #include <utility>
 
 namespace hypermoe::tensor {
+namespace {
+
+void validateStorageMetadata(DType dtype, Device device, const void* data) {
+    if (!isValid(dtype)) throw TensorError("tensor dtype is invalid");
+    if (!isValid(device.type) || device.ordinal < 0) {
+        throw TensorError("tensor device metadata is invalid");
+    }
+    if (device.type == DeviceType::CPU && device.ordinal != 0) {
+        throw TensorError("CPU tensors must use device ordinal zero");
+    }
+    const auto alignment = alignmentOf(dtype);
+    if (data != nullptr &&
+        reinterpret_cast<std::uintptr_t>(data) % alignment != 0) {
+        throw TensorError("tensor storage is not aligned for its dtype");
+    }
+}
+
+} // namespace
 
 Tensor Tensor::fromStorage(Shape shape,
                            DType dtype,
@@ -21,13 +41,16 @@ Tensor Tensor::fromDeviceBuffer(Shape shape,
                                 DType dtype,
                                 Device device,
                                 std::shared_ptr<backend::DeviceBuffer> buffer) {
-    if (!buffer) throw std::invalid_argument("tensor device buffer is null");
+    if (!buffer || !*buffer || !buffer->backend()) {
+        throw TensorError("tensor device buffer is empty");
+    }
+    validateStorageMetadata(dtype, device, buffer->data());
     const auto backendKind = buffer->backend()->kind();
     if ((device.type == DeviceType::CPU && backendKind != backend::BackendKind::Cpu) ||
         (device.type == DeviceType::CUDA &&
          (backendKind != backend::BackendKind::Cuda ||
           buffer->backend()->deviceOrdinal() != device.ordinal))) {
-        throw std::invalid_argument("tensor device metadata does not match its buffer");
+        throw TensorError("tensor device metadata does not match its buffer");
     }
     void* data = buffer->data();
     const auto storageBytes = buffer->size();
@@ -48,16 +71,12 @@ Tensor::Tensor(Shape shape,
       bytes_(logicalBytes(shape_, dtype_)),
       storageBytes_(storageBytes),
       owner_(std::move(owner)) {
-    if (sizeOf(dtype_) == 0) throw std::invalid_argument("tensor dtype is invalid");
-    if (device_.ordinal < 0) throw std::invalid_argument("device ordinal must be nonnegative");
-    if (device_.type == DeviceType::CPU && device_.ordinal != 0) {
-        throw std::invalid_argument("CPU tensors must use device ordinal zero");
-    }
+    validateStorageMetadata(dtype_, device_, data_);
     if (data_ == nullptr || !owner_) {
-        throw std::invalid_argument("tensor storage and owner must be present");
+        throw TensorError("tensor storage and owner must be present");
     }
     if (storageBytes_ < requiredBytes(shape_, dtype_)) {
-        throw std::invalid_argument("tensor storage is smaller than its metadata requires");
+        throw TensorError("tensor storage is smaller than its metadata requires");
     }
 }
 
@@ -75,10 +94,10 @@ Tensor::operator bool() const noexcept { return valid(); }
 Tensor Tensor::reshape(Shape shape) const {
     if (!valid()) throw std::logic_error("cannot reshape an empty tensor");
     if (!isContiguous() || !shape.isContiguous()) {
-        throw std::invalid_argument("reshape currently requires contiguous tensors");
+        throw TensorError("reshape currently requires contiguous tensors");
     }
     if (shape.elementCount() != shape_.elementCount()) {
-        throw std::invalid_argument("reshape must preserve the element count");
+        throw TensorError("reshape must preserve the element count");
     }
     return {std::move(shape), dtype_, device_, data_, storageBytes_, owner_};
 }
@@ -89,7 +108,7 @@ TensorView Tensor::view() const & { return TensorView(*this); }
 
 std::size_t Tensor::requiredBytes(const Shape& shape, DType dtype) {
     const auto elementBytes = sizeOf(dtype);
-    if (elementBytes == 0) throw std::invalid_argument("tensor dtype is invalid");
+    if (elementBytes == 0) throw TensorError("tensor dtype is invalid");
     if (shape.storageElementCount() >
         std::numeric_limits<std::size_t>::max() / elementBytes) {
         throw std::overflow_error("tensor byte size overflow");
@@ -99,7 +118,7 @@ std::size_t Tensor::requiredBytes(const Shape& shape, DType dtype) {
 
 std::size_t Tensor::logicalBytes(const Shape& shape, DType dtype) {
     const auto elementBytes = sizeOf(dtype);
-    if (elementBytes == 0) throw std::invalid_argument("tensor dtype is invalid");
+    if (elementBytes == 0) throw TensorError("tensor dtype is invalid");
     if (shape.elementCount() > std::numeric_limits<std::size_t>::max() / elementBytes) {
         throw std::overflow_error("tensor byte size overflow");
     }

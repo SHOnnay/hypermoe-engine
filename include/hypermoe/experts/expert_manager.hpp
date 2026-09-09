@@ -24,7 +24,7 @@ namespace tensor {
 class Shape;
 class Tensor;
 class TensorView;
-enum class DType;
+enum class DType : std::uint32_t;
 namespace quantization {
 class QuantizedTensor;
 enum class QuantizedDType : std::uint32_t;

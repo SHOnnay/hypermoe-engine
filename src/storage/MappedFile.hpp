@@ -29,7 +29,7 @@ public:
 
 private:
 #ifdef _WIN32
-    void* fileHandle_{reinterpret_cast<void*>(-1)};
+    void* fileHandle_{};
     void* mappingHandle_{};
 #else
     int fileDescriptor_{-1};

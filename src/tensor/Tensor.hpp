@@ -5,6 +5,7 @@
 #include "tensor/Shape.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string_view>
 
@@ -12,10 +13,14 @@ namespace hypermoe::tensor {
 
 class TensorView;
 
-enum class DeviceType {
-    CPU,
-    CUDA,
+enum class DeviceType : std::uint8_t {
+    CPU = 0,
+    CUDA = 1,
 };
+
+[[nodiscard]] constexpr bool isValid(DeviceType type) noexcept {
+    return type == DeviceType::CPU || type == DeviceType::CUDA;
+}
 
 [[nodiscard]] constexpr std::string_view toString(DeviceType type) noexcept {
     switch (type) {

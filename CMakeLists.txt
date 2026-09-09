@@ -1,15 +1,85 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(HyperMoE VERSION 0.14.0 LANGUAGES CXX)
+project(HyperMoE VERSION 0.14.5 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(HYPERMOE_BUILD_TESTS "Build HyperMoE tests" ON)
 option(HYPERMOE_BUILD_BENCHMARKS "Build HyperMoE simulation benchmarks" ON)
 option(HYPERMOE_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 option(HYPERMOE_ENABLE_CUDA "Enable CUDA backend when the toolkit is available" ON)
+option(HYPERMOE_WARNINGS_AS_ERRORS "Treat HyperMoE compiler warnings as errors" OFF)
+
+if(CMAKE_SIZEOF_VOID_P LESS 8)
+    message(FATAL_ERROR "HyperMoE requires a 64-bit target to address model artifacts")
+endif()
+
+include(CheckCXXSourceCompiles)
+check_cxx_source_compiles([[
+    #include <bit>
+    #include <climits>
+    #include <cstdint>
+    #include <span>
+    static_assert(CHAR_BIT == 8);
+    static_assert(sizeof(std::uint32_t) == 4);
+    static_assert(sizeof(std::uint64_t) == 8);
+    static_assert(std::endian::native == std::endian::little);
+    int main() { int value = 0; std::span<int> values(&value, 1); return values[0]; }
+]] HYPERMOE_PORTABLE_CXX20_RUNTIME)
+if(NOT HYPERMOE_PORTABLE_CXX20_RUNTIME)
+    message(FATAL_ERROR
+        "HyperMoE requires a C++20 standard library, 8-bit bytes, and little-endian byte order")
+endif()
+
+message(STATUS "HyperMoE platform: ${CMAKE_SYSTEM_NAME} ${CMAKE_SYSTEM_PROCESSOR} (64-bit)")
+message(STATUS "HyperMoE compiler: ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
 
 find_package(Threads REQUIRED)
+set(HYPERMOE_CUDA_ENABLED OFF)
 if(HYPERMOE_ENABLE_CUDA)
     find_package(CUDAToolkit QUIET)
+    if(CUDAToolkit_FOUND)
+        set(HYPERMOE_CUDA_ENABLED ON)
+        message(STATUS
+            "HyperMoE CUDA: toolkit ${CUDAToolkit_VERSION}; runtime API and cuBLAS enabled")
+        message(STATUS
+            "HyperMoE CUDA: no CUDA compiler or custom kernels are required")
+    else()
+        message(STATUS
+            "HyperMoE CUDA: requested, but CUDAToolkit was not found; CPU fallback enabled")
+    endif()
+else()
+    message(STATUS "HyperMoE CUDA: disabled by HYPERMOE_ENABLE_CUDA=OFF")
+endif()
+
+if(MSVC)
+    add_compile_options(/W4 /permissive- /EHsc /Zc:__cplusplus)
+    if(HYPERMOE_WARNINGS_AS_ERRORS)
+        add_compile_options(/WX)
+    endif()
+else()
+    add_compile_options(-Wall -Wextra -Wpedantic -Wconversion)
+    if(HYPERMOE_WARNINGS_AS_ERRORS)
+        add_compile_options(-Werror)
+    endif()
+endif()
+
+if(HYPERMOE_ENABLE_SANITIZERS)
+    if(MSVC)
+        add_compile_options(/fsanitize=address /Zi)
+        add_link_options(/INCREMENTAL:NO)
+        message(STATUS
+            "HyperMoE sanitizers: MSVC AddressSanitizer enabled; UBSan is unavailable on MSVC")
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "AppleClang|Clang|GNU")
+        add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
+        add_link_options(-fsanitize=address,undefined)
+        message(STATUS "HyperMoE sanitizers: AddressSanitizer and UBSan enabled")
+    else()
+        message(FATAL_ERROR
+            "HYPERMOE_ENABLE_SANITIZERS is unsupported by this compiler")
+    endif()
 endif()
 
 add_library(hypermoe
@@ -96,25 +166,11 @@ target_include_directories(hypermoe
 )
 target_link_libraries(hypermoe PUBLIC Threads::Threads)
 
-if(CUDAToolkit_FOUND)
+if(HYPERMOE_CUDA_ENABLED)
     target_compile_definitions(hypermoe PUBLIC
         HYPERMOE_HAS_CUDA=1
         HYPERMOE_HAS_CUBLAS=1)
     target_link_libraries(hypermoe PUBLIC CUDA::cudart CUDA::cublas)
-    message(STATUS "HyperMoE CUDA and cuBLAS backends enabled")
-else()
-    message(STATUS "HyperMoE CUDA backend disabled; CPU fallback enabled")
-endif()
-
-if(MSVC)
-    target_compile_options(hypermoe PRIVATE /W4 /permissive-)
-else()
-    target_compile_options(hypermoe PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
-endif()
-
-if(HYPERMOE_ENABLE_SANITIZERS AND NOT MSVC)
-    target_compile_options(hypermoe PUBLIC -fsanitize=address,undefined -fno-omit-frame-pointer)
-    target_link_options(hypermoe PUBLIC -fsanitize=address,undefined)
 endif()
 
 if(HYPERMOE_BUILD_TESTS)
@@ -182,6 +238,10 @@ if(HYPERMOE_BUILD_TESTS)
     add_executable(hypermoe_phase14_tests tests/phase14_tests.cpp)
     target_link_libraries(hypermoe_phase14_tests PRIVATE HyperMoE::hypermoe)
     add_test(NAME hypermoe_phase14 COMMAND hypermoe_phase14_tests)
+
+    add_executable(hypermoe_platform_tests tests/platform_tests.cpp)
+    target_link_libraries(hypermoe_platform_tests PRIVATE HyperMoE::hypermoe)
+    add_test(NAME hypermoe_platform COMMAND hypermoe_platform_tests)
 endif()
 
 if(HYPERMOE_BUILD_BENCHMARKS)

@@ -1,4 +1,5 @@
 #include "tensor/TensorView.hpp"
+#include "tensor/TensorError.hpp"
 
 #include <cstdint>
 #include <limits>
@@ -9,19 +10,23 @@ namespace hypermoe::tensor {
 namespace {
 
 void validateDevice(Device device) {
-    if (device.ordinal < 0) throw std::invalid_argument("device ordinal must be nonnegative");
+    if (!isValid(device.type) || device.ordinal < 0) {
+        throw TensorError("tensor view device metadata is invalid");
+    }
     if (device.type == DeviceType::CPU && device.ordinal != 0) {
-        throw std::invalid_argument("CPU tensor views must use device ordinal zero");
+        throw TensorError("CPU tensor views must use device ordinal zero");
     }
 }
 
 void validateBufferDevice(const backend::DeviceBuffer& buffer, Device device) {
+    validateDevice(device);
+    if (!buffer.backend()) throw TensorError("tensor view buffer has no backend");
     const auto kind = buffer.backend()->kind();
     if ((device.type == DeviceType::CPU && kind != backend::BackendKind::Cpu) ||
         (device.type == DeviceType::CUDA &&
          (kind != backend::BackendKind::Cuda ||
           buffer.backend()->deviceOrdinal() != device.ordinal))) {
-        throw std::invalid_argument("tensor view device metadata does not match its buffer");
+        throw TensorError("tensor view device metadata does not match its buffer");
     }
 }
 
@@ -52,7 +57,7 @@ TensorView TensorView::fromDeviceBuffer(
     Device device,
     const std::shared_ptr<backend::DeviceBuffer>& buffer,
     bool writable) {
-    if (!buffer || !*buffer) throw std::invalid_argument("tensor view buffer is empty");
+    if (!buffer || !*buffer) throw TensorError("tensor view buffer is empty");
     validateBufferDevice(*buffer, device);
     auto owner = std::static_pointer_cast<void>(buffer);
     return {shape, dtype, device, buffer->data(), writable ? buffer->data() : nullptr,
@@ -76,10 +81,15 @@ TensorView::TensorView(Shape shape,
       lifetime_(std::move(lifetime)) {
     validateDevice(device_);
     if (data_ == nullptr || lifetime_.expired()) {
-        throw std::invalid_argument("tensor view storage must be alive");
+        throw TensorError("tensor view storage must be alive");
+    }
+    const auto alignment = alignmentOf(dtype_);
+    if (alignment == 0 ||
+        reinterpret_cast<std::uintptr_t>(data_) % alignment != 0) {
+        throw TensorError("tensor view storage is not aligned for its dtype");
     }
     if (storageBytes_ < requiredBytes(shape_, dtype_)) {
-        throw std::invalid_argument("tensor view storage is smaller than its metadata requires");
+        throw TensorError("tensor view storage is smaller than its metadata requires");
     }
 }
 
@@ -109,10 +119,10 @@ std::shared_ptr<void> TensorView::lockOwner() const noexcept {
 TensorView TensorView::reshape(Shape shape) const {
     if (!valid()) throw std::logic_error("cannot reshape an invalid tensor view");
     if (!isContiguous() || !shape.isContiguous()) {
-        throw std::invalid_argument("reshape currently requires contiguous tensor views");
+        throw TensorError("reshape currently requires contiguous tensor views");
     }
     if (shape.elementCount() != shape_.elementCount()) {
-        throw std::invalid_argument("reshape must preserve the element count");
+        throw TensorError("reshape must preserve the element count");
     }
     return {std::move(shape), dtype_, device_, data_, mutableData_, storageBytes_, lifetime_};
 }
@@ -122,9 +132,9 @@ TensorView TensorView::sliceBytes(std::size_t offsetBytes,
                                   DType dtype) const {
     if (!valid()) throw std::logic_error("cannot slice an invalid tensor view");
     const auto alignment = sizeOf(dtype);
-    if (alignment == 0) throw std::invalid_argument("tensor view dtype is invalid");
+    if (alignment == 0) throw TensorError("tensor view dtype is invalid");
     if (offsetBytes % alignment != 0) {
-        throw std::invalid_argument("tensor view slice offset is not element-aligned");
+        throw TensorError("tensor view slice offset is not element-aligned");
     }
     if (offsetBytes > storageBytes_) {
         throw std::out_of_range("tensor view slice offset exceeds storage");

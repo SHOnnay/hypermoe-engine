@@ -1,5 +1,7 @@
 #include "tensor/quantization/QuantizedTensor.hpp"
 
+#include "tensor/TensorError.hpp"
+
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
@@ -9,19 +11,25 @@ namespace hypermoe::tensor::quantization {
 namespace {
 
 void validateDevice(Device device) {
-    if (device.ordinal < 0) throw std::invalid_argument("device ordinal must be nonnegative");
+    if (!isValid(device.type) || device.ordinal < 0) {
+        throw TensorError("quantized tensor device metadata is invalid");
+    }
     if (device.type == DeviceType::CPU && device.ordinal != 0) {
-        throw std::invalid_argument("CPU quantized tensors must use device ordinal zero");
+        throw TensorError("CPU quantized tensors must use device ordinal zero");
     }
 }
 
 void validateBufferDevice(const backend::DeviceBuffer& buffer, Device device) {
+    validateDevice(device);
+    if (!buffer.backend()) {
+        throw TensorError("quantized tensor buffer has no backend");
+    }
     const auto kind = buffer.backend()->kind();
     if ((device.type == DeviceType::CPU && kind != backend::BackendKind::Cpu) ||
         (device.type == DeviceType::CUDA &&
          (kind != backend::BackendKind::Cuda ||
           buffer.backend()->deviceOrdinal() != device.ordinal))) {
-        throw std::invalid_argument(
+        throw TensorError(
             "quantized tensor device metadata does not match its buffer");
     }
 }
@@ -64,7 +72,7 @@ QuantizedTensor QuantizedTensor::fromDeviceBuffer(
     QuantizationParameters parameters,
     Device device,
     std::shared_ptr<backend::DeviceBuffer> buffer) {
-    if (!buffer || !*buffer) throw std::invalid_argument("quantized tensor buffer is empty");
+    if (!buffer || !*buffer) throw TensorError("quantized tensor buffer is empty");
     validateBufferDevice(*buffer, device);
     auto* data = buffer->data();
     const auto storageBytes = buffer->size();
@@ -90,10 +98,10 @@ QuantizedTensor::QuantizedTensor(Shape shape,
     validateParameters(dtype_, parameters_);
     validateDevice(device_);
     if (data_ == nullptr || !owner_) {
-        throw std::invalid_argument("quantized tensor storage and owner must be present");
+        throw TensorError("quantized tensor storage and owner must be present");
     }
     if (storageBytes_ < bytes_) {
-        throw std::invalid_argument("quantized tensor storage is too small");
+        throw TensorError("quantized tensor storage is too small");
     }
 }
 
