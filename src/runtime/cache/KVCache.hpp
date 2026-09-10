@@ -33,6 +33,7 @@ public:
     [[nodiscard]] KVCacheSnapshot snapshot(std::size_t layer) const;
     [[nodiscard]] std::size_t tokenCount(std::size_t layer) const;
     [[nodiscard]] std::size_t memoryUsageBytes() const;
+    [[nodiscard]] std::size_t maximumMemoryUsageBytes() const;
     void clear(std::size_t layer);
     void reset();
 

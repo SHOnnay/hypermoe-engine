@@ -3,15 +3,21 @@
 HyperMoE is a C++20 inference-runtime project for hierarchical Mixture-of-Experts
 memory management across VRAM, pinned RAM, ordinary RAM, and NVMe. Phase 14 adds
 a manifest-driven token embedding, complete multi-layer forward execution, final
-RMSNorm, tied or separate vocabulary projection, and vocabulary logits. There is
-intentionally no tokenizer, generation loop, server, sampling, or custom CUDA
-kernel.
+RMSNorm, tied or separate vocabulary projection, and vocabulary logits. Phases
+15 and 16 add the portable incremental generation orchestration described below;
+there is intentionally no server, chat API, or custom CUDA kernel yet.
 
 Phase 14.5 hardens the same runtime contracts across 64-bit little-endian
 Windows, Linux, and macOS targets. It adds explicit wire-enum values, alignment
 validation for external tensor storage, safer empty/moved buffer behavior,
 portable index regression vectors, and CMake capability diagnostics. It does
 not add inference features or alter scheduler policy.
+
+Phases 15 and 16 add a bounded incremental generation foundation: tokenizer
+adapters, session-owned KV caches, multi-token prefill, one-token decode,
+greedy/temperature/top-k/top-p sampling, stop tokens, and text detokenization.
+The real `ModelRuntime` is connected through a model-neutral generation adapter.
+There is still no server, chat template, or built-in Qwen BPE implementation.
 
 ## Build and run
 
@@ -74,6 +80,16 @@ enables ASan and UBSan with Apple Clang, Clang, or GCC; MSVC enables ASan and
 prints that UBSan is unavailable. `HYPERMOE_WARNINGS_AS_ERRORS=ON` is available
 for CI once every compiler's warning baseline is clean. See
 [platform support](docs/components/platform-support.md).
+
+The deterministic CPU generation benchmark writes a JSON report:
+
+```sh
+./build/hypermoe_generation_benchmark generation_report.json.report
+```
+
+See [incremental generation](docs/components/generation.md), the
+[tokenizer boundary](docs/components/tokenizer.md), and the
+[KV cache runtime](docs/components/kv-cache-runtime.md).
 
 The Phase 1 simulator accepts `--requests`, `--seed`, `--vram-mib`, and
 `--ram-mib`. The Phase 2 simulator accepts `--tokens`, `--seed`, `--read-mode`

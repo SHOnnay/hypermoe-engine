@@ -14,6 +14,9 @@
 namespace hypermoe::tensor {
 class TensorBackend;
 }
+namespace hypermoe::runtime::cache {
+class KVCache;
+}
 namespace hypermoe::transformer::embedding {
 class Embedding;
 }
@@ -49,6 +52,10 @@ public:
     [[nodiscard]] ModelForwardResult forward(
         hypermoe::runtime::InferenceContext& context,
         std::span<const std::uint32_t> tokenIds);
+    [[nodiscard]] ModelForwardResult forward(
+        hypermoe::runtime::InferenceContext& context,
+        std::span<const std::uint32_t> tokenIds,
+        hypermoe::runtime::cache::KVCache& kvCache);
     [[nodiscard]] const ModelArchitecture& architecture() const noexcept;
     [[nodiscard]] bool tiedWeightsShareStorage() const noexcept;
 
@@ -61,6 +68,11 @@ private:
     tensor::TensorView embeddingWeights_;
     tensor::TensorView finalNormWeights_;
     tensor::TensorView lmHeadWeights_;
+
+    [[nodiscard]] ModelForwardResult forwardImpl(
+        hypermoe::runtime::InferenceContext& context,
+        std::span<const std::uint32_t> tokenIds,
+        hypermoe::runtime::cache::KVCache* kvCache);
 };
 
 } // namespace hypermoe::models::runtime

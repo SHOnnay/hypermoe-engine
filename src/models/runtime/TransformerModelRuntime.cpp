@@ -124,6 +124,20 @@ TransformerModelRuntime::TransformerModelRuntime(
 ModelExecutionResult TransformerModelRuntime::execute(
     hypermoe::runtime::InferenceContext& context,
     tensor::TensorView hiddenStates) {
+    return executeImpl(context, hiddenStates, kvCache_.get());
+}
+
+ModelExecutionResult TransformerModelRuntime::execute(
+    hypermoe::runtime::InferenceContext& context,
+    tensor::TensorView hiddenStates,
+    hypermoe::runtime::cache::KVCache& kvCache) {
+    return executeImpl(context, hiddenStates, &kvCache);
+}
+
+ModelExecutionResult TransformerModelRuntime::executeImpl(
+    hypermoe::runtime::InferenceContext& context,
+    tensor::TensorView hiddenStates,
+    hypermoe::runtime::cache::KVCache* kvCache) {
     context.validate();
     if (!hiddenStates || hiddenStates.shape().rank() != 2 ||
         hiddenStates.shape().dimensions()[0] != context.batchSize ||
@@ -132,6 +146,12 @@ ModelExecutionResult TransformerModelRuntime::execute(
         throw std::invalid_argument(
             "model input and inference context do not match architecture");
     }
+    if (kvCache &&
+        (kvCache->layerCount() != architecture_.layerCount ||
+         kvCache->keyValueHeads() != architecture_.keyValueHeads ||
+         kvCache->headDimension() != architecture_.headDimension)) {
+        throw std::invalid_argument("model architecture and session KV cache disagree");
+    }
     ModelExecutionResult modelResult;
     modelResult.layers.reserve(architecture_.layerCount);
     tensor::Tensor current;
@@ -139,7 +159,9 @@ ModelExecutionResult TransformerModelRuntime::execute(
     const auto start = std::chrono::steady_clock::now();
     for (std::size_t layerId = 0; layerId < architecture_.layerCount; ++layerId) {
         context.advanceLayer(static_cast<LayerId>(layerId));
-        auto layerResult = block_.execute(context, currentView, weights_[layerId]);
+        auto layerWeights = weights_[layerId];
+        layerWeights.attentionConfiguration.kvCache = kvCache;
+        auto layerResult = block_.execute(context, currentView, layerWeights);
         modelResult.layers.push_back({
             static_cast<LayerId>(layerId), layerResult.timings,
             layerResult.moe.execution, layerResult.moe.routing.tokens,

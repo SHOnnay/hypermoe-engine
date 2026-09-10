@@ -174,6 +174,20 @@ validated 64-bit little-endian platform contract
         └── optional CUDA/cuBLAS capability discovery
 ```
 
+Phases 15 and 16 add stateful incremental execution above the forward runtime:
+
+```text
+Tokenizer -> InferenceSession -> Decoder::prefill
+                                  |
+                                  v
+                         bounded KVCacheManager
+                                  |
+last logits -> LogitsProcessor -> Sampler -> Decoder::decode -> generated IDs
+                                                               |
+                                                               v
+                                                       Tokenizer::decode
+```
+
 ## Components
 
 - `ExpertIndex` parses a versioned, fixed-width little-endian format and builds
@@ -343,6 +357,15 @@ validated 64-bit little-endian platform contract
 - The Windows mapped-file implementation uses `nullptr` as its internal closed
   state; moved and closed mappings expose empty spans without sentinel pointer
   arithmetic.
+- `KVCacheManager` performs conservative per-session admission against a
+  configured aggregate memory limit while `KVCache` grows dynamically.
+- `InferenceSession` owns sequence, forward, and cache state. `Decoder` executes
+  multi-token prefill and one-token cached forwards without changing the
+  stateless Phase 14 API.
+- `GenerationModel` decouples orchestration from model internals;
+  `ModelRuntimeGenerationModel` supplies the real forward-to-logits bridge.
+- `Tokenizer`, `LogitsProcessor`, `Sampler`, and `Generator` keep text mapping,
+  probability policy, and decode control outside transformer execution.
 
 ## Ownership and synchronization
 
@@ -370,7 +393,8 @@ addition to tier-independent events.
 - GGUF readers and DeepSeek/GLM/Kimi/Mixtral artifact importers
 - Native CUDA router, attention, RMSNorm, RoPE, grouped gather/scatter, and KV cache
 - Direct-storage integrations and unbuffered platform-specific NVMe benchmarks
-- Tokenizer, generation loop, sampling, dense/non-MoE layers, and output bias
+- Real tokenizer artifact parsing/chat templates, dense/non-MoE layers, output
+  bias, batched sessions, beam/speculative decoding, streaming, and serving
 - Automatic scheduler-driven capacity selection and eviction policy execution
 - Quantized dequantization/GEMM, batched/strided GEMM, FP16 compute, kernel launch
   policy, and CUDA graphs

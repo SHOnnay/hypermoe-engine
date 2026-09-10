@@ -57,6 +57,20 @@ ModelRuntime::ModelRuntime(const models::ModelManifest& manifest,
 ModelForwardResult ModelRuntime::forward(
     hypermoe::runtime::InferenceContext& context,
     std::span<const std::uint32_t> tokenIds) {
+    return forwardImpl(context, tokenIds, nullptr);
+}
+
+ModelForwardResult ModelRuntime::forward(
+    hypermoe::runtime::InferenceContext& context,
+    std::span<const std::uint32_t> tokenIds,
+    hypermoe::runtime::cache::KVCache& kvCache) {
+    return forwardImpl(context, tokenIds, &kvCache);
+}
+
+ModelForwardResult ModelRuntime::forwardImpl(
+    hypermoe::runtime::InferenceContext& context,
+    std::span<const std::uint32_t> tokenIds,
+    hypermoe::runtime::cache::KVCache* kvCache) {
     context.validate();
     if (tokenIds.empty() || tokenIds.size() != context.batchSize ||
         context.hiddenDimension != architecture_.hiddenDimension) {
@@ -69,7 +83,9 @@ ModelForwardResult ModelRuntime::forward(
     result.embeddings = embedding_->execute(tokenIds, embeddingWeights_);
     result.timings.embedding = std::chrono::steady_clock::now() - start;
     start = std::chrono::steady_clock::now();
-    result.transformer = transformer_->execute(context, result.embeddings.view());
+    result.transformer = kvCache
+        ? transformer_->execute(context, result.embeddings.view(), *kvCache)
+        : transformer_->execute(context, result.embeddings.view());
     result.timings.transformer = std::chrono::steady_clock::now() - start;
     start = std::chrono::steady_clock::now();
     result.normalizedHiddenStates = finalNorm_->execute(

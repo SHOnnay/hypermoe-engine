@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(HyperMoE VERSION 0.14.5 LANGUAGES CXX)
+project(HyperMoE VERSION 0.16.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -127,6 +127,16 @@ add_library(hypermoe
     src/experts/ExpertBatch.cpp
     src/runtime/InferenceContext.cpp
     src/runtime/cache/KVCache.cpp
+    src/runtime/cache/KVCacheManager.cpp
+    src/runtime/generation/ForwardState.cpp
+    src/runtime/generation/GenerationModel.cpp
+    src/runtime/generation/GenerationState.cpp
+    src/runtime/generation/InferenceSession.cpp
+    src/runtime/generation/Decoder.cpp
+    src/tokenizer/qwen/QwenTokenizerAdapter.cpp
+    src/generation/LogitsProcessor.cpp
+    src/generation/Sampler.cpp
+    src/generation/Generator.cpp
     src/models/ExpertWeightMap.cpp
     src/models/ModelManifest.cpp
     src/models/runtime/ModelArchitecture.cpp
@@ -247,6 +257,10 @@ if(HYPERMOE_BUILD_TESTS)
     add_executable(hypermoe_platform_tests tests/platform_tests.cpp)
     target_link_libraries(hypermoe_platform_tests PRIVATE HyperMoE::hypermoe)
     add_test(NAME hypermoe_platform COMMAND hypermoe_platform_tests)
+
+    add_executable(hypermoe_phase15_16_tests tests/phase15_16_tests.cpp)
+    target_link_libraries(hypermoe_phase15_16_tests PRIVATE HyperMoE::hypermoe)
+    add_test(NAME hypermoe_phase15_16 COMMAND hypermoe_phase15_16_tests)
 endif()
 
 if(HYPERMOE_BUILD_BENCHMARKS)
@@ -307,6 +321,10 @@ if(HYPERMOE_BUILD_BENCHMARKS)
     add_executable(hypermoe_forward_benchmark
         benchmarks/forward/forward_benchmark.cpp)
     target_link_libraries(hypermoe_forward_benchmark PRIVATE HyperMoE::hypermoe)
+
+    add_executable(hypermoe_generation_benchmark
+        benchmarks/generation/generation_benchmark.cpp)
+    target_link_libraries(hypermoe_generation_benchmark PRIVATE HyperMoE::hypermoe)
 
     add_executable(hypermoe_model_inspect
         tools/model_inspect/model_inspect.cpp)

@@ -5,6 +5,30 @@
 #include <stdexcept>
 
 namespace hypermoe::runtime::cache {
+namespace {
+
+std::size_t checkedCacheBytes(std::size_t layers,
+                              std::size_t sequence,
+                              std::size_t heads,
+                              std::size_t dimension) {
+    if (layers == 0 || sequence == 0 || heads == 0 || dimension == 0 ||
+        heads > std::numeric_limits<std::size_t>::max() / dimension) {
+        throw std::invalid_argument("KV cache dimensions must be nonzero");
+    }
+    const auto values = heads * dimension;
+    if (values > (std::numeric_limits<std::size_t>::max() /
+                  (2U * sizeof(float)))) {
+        throw std::overflow_error("KV cache per-token storage overflows");
+    }
+    const auto perToken = sizeof(std::uint64_t) + 2U * values * sizeof(float);
+    if (sequence > std::numeric_limits<std::size_t>::max() / perToken ||
+        layers > std::numeric_limits<std::size_t>::max() / (sequence * perToken)) {
+        throw std::overflow_error("KV cache maximum storage overflows");
+    }
+    return layers * sequence * perToken;
+}
+
+} // namespace
 
 std::size_t KVCacheSnapshot::tokenCount() const noexcept {
     return positions.size();
@@ -18,11 +42,8 @@ KVCache::KVCache(std::size_t layerCount,
       keyValueHeads_(keyValueHeads),
       headDimension_(headDimension),
       layers_(layerCount) {
-    if (layerCount == 0 || maximumSequenceLength_ == 0 || keyValueHeads_ == 0 ||
-        headDimension_ == 0 ||
-        keyValueHeads_ > std::numeric_limits<std::size_t>::max() / headDimension_) {
-        throw std::invalid_argument("KV cache dimensions must be nonzero");
-    }
+    (void)checkedCacheBytes(layerCount, maximumSequenceLength_, keyValueHeads_,
+                            headDimension_);
 }
 
 void KVCache::append(std::size_t layer,
@@ -54,8 +75,18 @@ void KVCache::append(std::size_t layer,
     }
     const auto oldSize = storage.keys.size();
     const auto appended = keys.shape().elementCount();
-    storage.keys.resize(oldSize + appended);
-    storage.values.resize(oldSize + appended);
+    if (oldSize > std::numeric_limits<std::size_t>::max() - appended) {
+        throw std::overflow_error("KV cache element count overflows");
+    }
+    const auto newSize = oldSize + appended;
+    const auto newTokenCount = storage.positions.size() + dimensions[0];
+    // Reserve every vector before changing logical sizes. Allocation failure can
+    // change capacity, but never leaves keys, values, and positions inconsistent.
+    storage.positions.reserve(newTokenCount);
+    storage.keys.reserve(newSize);
+    storage.values.reserve(newSize);
+    storage.keys.resize(newSize);
+    storage.values.resize(newSize);
     std::memcpy(storage.keys.data() + oldSize, keys.data(), keys.bytes());
     std::memcpy(storage.values.data() + oldSize, values.data(), values.bytes());
     for (std::size_t token = 0; token < dimensions[0]; ++token) {
@@ -85,6 +116,11 @@ std::size_t KVCache::memoryUsageBytes() const {
         result += (layer.keys.size() + layer.values.size()) * sizeof(float);
     }
     return result;
+}
+
+std::size_t KVCache::maximumMemoryUsageBytes() const {
+    return checkedCacheBytes(layers_.size(), maximumSequenceLength_,
+                             keyValueHeads_, headDimension_);
 }
 
 void KVCache::clear(std::size_t layer) {

@@ -71,6 +71,10 @@ public:
     [[nodiscard]] ModelExecutionResult execute(
         hypermoe::runtime::InferenceContext& context,
         tensor::TensorView hiddenStates);
+    [[nodiscard]] ModelExecutionResult execute(
+        hypermoe::runtime::InferenceContext& context,
+        tensor::TensorView hiddenStates,
+        hypermoe::runtime::cache::KVCache& kvCache);
     [[nodiscard]] const ModelArchitecture& architecture() const noexcept;
     [[nodiscard]] const RuntimeTensorMap& tensors() const noexcept;
 
@@ -83,6 +87,11 @@ private:
     transformer::runtime::TransformerBlock block_;
     std::shared_ptr<hypermoe::runtime::cache::KVCache> kvCache_;
     std::vector<transformer::runtime::TransformerBlockWeights> weights_;
+
+    [[nodiscard]] ModelExecutionResult executeImpl(
+        hypermoe::runtime::InferenceContext& context,
+        tensor::TensorView hiddenStates,
+        hypermoe::runtime::cache::KVCache* kvCache);
 };
 
 } // namespace hypermoe::models::runtime

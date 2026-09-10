@@ -587,3 +587,37 @@ scheduler and residency behavior. Phase 14.5 restricts changes to platform
 contracts, storage validation, tensor safety, and build configuration so results
 from that work remain attributable. Scheduler and memory-policy redesigns are
 explicitly outside this phase.
+
+## Why generation uses a model-neutral forward interface
+
+Generation needs vocabulary and attention dimensions plus a cached forward
+operation; it should not know Qwen tensor names or own transformer components.
+`GenerationModel` expresses that narrow contract. The production adapter wraps
+`ModelRuntime`, while deterministic fixtures implement the same contract for
+portable tests. This also keeps future CUDA execution behind the existing model
+and tensor backend boundaries.
+
+## Why KV cache admission reserves the maximum session size
+
+Charging only currently appended tokens allows several sessions to begin and
+then exceed RAM or VRAM together during decode. `KVCacheManager` instead admits
+a session only if its configured maximum logical cache fits. Physical vectors
+still grow dynamically, but aggregate worst-case demand is bounded before the
+first token executes. Paged allocation can refine this policy later without
+changing session ownership.
+
+## Why the Qwen tokenizer is an adapter in this phase
+
+Qwen tokenizer behavior cannot be inferred from model architecture metadata.
+Vocabulary files, normalization, pre-tokenization, merges, added tokens, and
+chat templates must be read from the actual artifact. The initial adapter
+accepts an external implementation and validates its token range, avoiding a
+plausible-looking but incompatible tokenizer in the core runtime.
+
+## Why seeded sampling avoids standard-library distributions
+
+The C++ random engines are specified, but distribution algorithms may differ
+between libc++ and MSVC. Sampling maps the high 53 bits of `mt19937_64` directly
+to a unit interval and walks the processed probability distribution. Identical
+seeds and logits therefore produce identical choices across supported standard
+libraries.
