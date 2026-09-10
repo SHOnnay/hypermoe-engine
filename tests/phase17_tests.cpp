@@ -109,7 +109,9 @@ public:
         auto hidden = deviceTensor(*backend_, hiddenHost.view());
         auto logits = deviceTensor(*backend_, logitsHost.view());
         cache.append(0, context.sequencePosition, cacheHost.view(), cacheHost.view());
-        return {std::move(hidden), std::move(logits), 0, {}};
+        std::vector<hypermoe::router::RouterDecision> routing(
+            tokenIds.size(), {0, {0}, {1.0F}});
+        return {std::move(hidden), std::move(logits), 0, std::move(routing)};
     }
 
 private:

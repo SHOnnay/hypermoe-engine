@@ -48,16 +48,18 @@
 
 ---
 
-## 4. Tests — 18/19 PASS (95%) in Release AND Debug
+## 4. Tests — 19/19 PASS (100%) in Release AND Debug
 
 | Test | Result |
 |------|--------|
 | hypermoe_phase1–14 | ✅ Passed |
 | hypermoe_platform | ✅ Passed |
 | hypermoe_phase15_16 | ✅ Passed |
-| **hypermoe_phase17** | ❌ **Failed (exit 1, both configs)** |
+| **hypermoe_phase17** | ✅ **Passed** |
 
-Reproduced directly: `hypermoe_phase17_tests.exe` exits 1 in Release and Debug with:
+### Phase 17 Failure (initial run) — RESOLVED
+
+On first validation, `hypermoe_phase17` failed in both configs (exit 1) with:
 
 ### Phase 17 Failure Analysis
 ```
@@ -70,7 +72,7 @@ The test's mock `CudaSessionModel::forward()` returns `ForwardPass` with an **em
 
 **Location:** `tests/phase17_tests.cpp:201` — `return {std::move(hidden), std::move(logits), 0, {}};`
 
-**Fix required in test only:** populate `routing` with `tokenIds.size()` valid `RouterDecision` entries (matching hidden states batch dimension). No source changes needed.
+**Fix applied (test-only):** `tests/phase17_tests.cpp` mock `CudaSessionModel::forward()` now returns one valid `RouterDecision` per token (`{layerId=0, {expert 0}, {1.0F}}`), matching the `ForwardState::update()` contract — same pattern as the Phase 15/16 mock. No runtime/source changes. After fix: **100% tests passed (19/19) in Release and Debug.**
 
 ---
 
@@ -180,11 +182,12 @@ GPU is **heavily underutilized** — work is memory/launch bound, not compute bo
 | CUDA Toolkit + cuBLAS | ✅ Ready |
 | Build (Release/Debug, CUDA ON) | ✅ Ready |
 | Phase 1–16 regression | ✅ 18/18 pass (both configs) |
+| Phase 17 tests | ✅ 19/19 pass (both configs, after test-mock fix) |
 | Phase 17 CUDA components exist | ✅ Verified on disk |
 | GPU inference benchmarks | ✅ Measured (baseline captured) |
 | CPU vs CUDA comparison | ✅ Measured (baseline captured) |
 | nvidia-smi profiling | ✅ Captured |
-| **Test blocker (phase17_tests.cpp)** | ⚠️ **One test fix needed** |
+| **Test blocker (phase17_tests.cpp)** | ✅ **Resolved — 19/19 pass both configs** |
 
 ---
 
