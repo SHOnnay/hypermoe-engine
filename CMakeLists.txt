@@ -56,6 +56,11 @@ endif()
 
 if(MSVC)
     add_compile_options(/W4 /permissive- /EHsc /Zc:__cplusplus)
+    # Generate PDBs in every configuration so crash dumps stay debuggable.
+    add_compile_options(/Zi)
+    add_link_options($<$<CONFIG:Debug>:/DEBUG>)
+    # Stack-frame and uninitialized-variable runtime checks in Debug builds.
+    add_compile_options($<$<CONFIG:Debug>:/RTC1>)
     if(HYPERMOE_WARNINGS_AS_ERRORS)
         add_compile_options(/WX)
     endif()

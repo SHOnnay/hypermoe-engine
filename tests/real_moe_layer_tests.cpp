@@ -52,8 +52,14 @@ class TemporaryDirectory {
 public:
     TemporaryDirectory() {
         static std::atomic_uint64_t sequence{};
-        path_ = std::filesystem::temp_directory_path() /
-            ("hypermoe-phase10-" + std::to_string(sequence.fetch_add(1)));
+        std::error_code probe;
+        do {
+            path_ = std::filesystem::temp_directory_path() /
+                ("hypermoe-phase10-" + std::to_string(sequence.fetch_add(1)));
+            probe.clear();
+            // Skip directories left behind by previous crashed runs so stale
+            // %TEMP% state can never poison a fresh run.
+        } while (std::filesystem::exists(path_, probe) || probe);
         std::filesystem::create_directories(path_);
     }
     ~TemporaryDirectory() {
