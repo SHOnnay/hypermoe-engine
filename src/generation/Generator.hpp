@@ -2,6 +2,7 @@
 
 #include "generation/LogitsProcessor.hpp"
 #include "runtime/generation/GenerationState.hpp"
+#include "runtime/generation/InferenceConfig.hpp"
 
 #include <chrono>
 #include <cstddef>
@@ -27,6 +28,7 @@ struct GenerationConfig {
     std::size_t maximumNewTokens{1};
     SamplingConfig sampling;
     std::vector<std::uint32_t> stopTokenIds;
+    runtime::generation::InferenceConfig inference;
 };
 
 struct GenerationMetrics {

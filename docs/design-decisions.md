@@ -621,3 +621,37 @@ between libc++ and MSVC. Sampling maps the high 53 bits of `mt19937_64` directly
 to a unit interval and walks the processed probability distribution. Identical
 seeds and logits therefore produce identical choices across supported standard
 libraries.
+
+## Why Phase 17 mixes cuBLAS execution with explicit reference staging
+
+Correct GPU results are the first target, while custom kernels are intentionally
+deferred. FP32 matrix projections map directly to cuBLAS GEMM; vector addition
+maps to AXPY, and elementwise multiplication maps to diagonal scaling. Those
+operations stay in VRAM. RMSNorm is decomposed into cuBLAS norm, diagonal
+scaling, and vector scaling calls. RoPE, softmax/context accumulation, activation,
+routing, and grouped expert scatter currently cross an explicit host
+boundary and reuse the tested scalar implementation. The component still
+returns tensors on its selected device, so replacing one staged operation with
+a kernel does not alter model or generation APIs. Benchmark reports must expose
+this boundary rather than describing the entire transformer as GPU-native.
+
+## Why KV cache storage has a polymorphic contract
+
+Attention and decoding require sequence positions and per-layer snapshots, not a
+particular allocation type. `KVCacheBase` retains that observable contract while
+the CPU cache owns vectors and `CudaKVCache` owns backend tensors. A manager is
+constructed with either no backend (CPU) or an available CUDA tensor backend;
+sessions reject any model/cache/device mismatch before allocating state. The
+initial CUDA snapshot performs a checked device-to-host copy for the reference
+softmax path. A future paged attention kernel can consume the same device chunks
+without changing session ownership.
+
+## Why sampling materializes logits through GenerationModel
+
+The sampler is deliberately device-independent and consumes ordinary FP32
+values. Requiring `Generator` to know a concrete CUDA backend would couple text
+generation to one model implementation. Instead, `GenerationModel` exposes a
+host-materialization boundary. CPU fixtures inherit the safe default copy;
+`ModelRuntimeGenerationModel` delegates to its configured tensor backend. This
+keeps backend selection explicit while avoiding undefined host dereferences of
+device pointers.

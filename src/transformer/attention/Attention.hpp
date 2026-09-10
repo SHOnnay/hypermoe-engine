@@ -8,7 +8,7 @@
 #include <string_view>
 
 namespace hypermoe::runtime::cache {
-class KVCache;
+class KVCacheBase;
 }
 
 namespace hypermoe::transformer::attention {
@@ -39,7 +39,7 @@ struct AttentionConfiguration {
     float ropeTheta{10000.0F};
     std::uint32_t layerIndex{};
     std::uint64_t positionOffset{};
-    hypermoe::runtime::cache::KVCache* kvCache{};
+    hypermoe::runtime::cache::KVCacheBase* kvCache{};
 };
 
 class Attention {

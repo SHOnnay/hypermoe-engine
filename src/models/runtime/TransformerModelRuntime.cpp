@@ -48,7 +48,7 @@ TransformerModelRuntime::TransformerModelRuntime(
     std::shared_ptr<transformer::norm::Norm> postAttentionNormalization,
     std::shared_ptr<transformer::MoELayer> moe,
     std::shared_ptr<tensor::TensorBackend> backend,
-    std::shared_ptr<hypermoe::runtime::cache::KVCache> kvCache)
+    std::shared_ptr<hypermoe::runtime::cache::KVCacheBase> kvCache)
     : architecture_(ModelArchitecture::fromManifest(manifest)),
       tensors_(std::move(tensors)),
       inputNormalization_(std::move(inputNormalization)),
@@ -65,7 +65,8 @@ TransformerModelRuntime::TransformerModelRuntime(
     if (kvCache_ &&
         (kvCache_->layerCount() != architecture_.layerCount ||
          kvCache_->keyValueHeads() != architecture_.keyValueHeads ||
-         kvCache_->headDimension() != architecture_.headDimension)) {
+         kvCache_->headDimension() != architecture_.headDimension ||
+         kvCache_->device() != backend_->device())) {
         throw std::invalid_argument("model architecture and KV cache disagree");
     }
     if (!inputNormalization_ || !postAttentionNormalization_ ||
@@ -130,14 +131,14 @@ ModelExecutionResult TransformerModelRuntime::execute(
 ModelExecutionResult TransformerModelRuntime::execute(
     hypermoe::runtime::InferenceContext& context,
     tensor::TensorView hiddenStates,
-    hypermoe::runtime::cache::KVCache& kvCache) {
+    hypermoe::runtime::cache::KVCacheBase& kvCache) {
     return executeImpl(context, hiddenStates, &kvCache);
 }
 
 ModelExecutionResult TransformerModelRuntime::executeImpl(
     hypermoe::runtime::InferenceContext& context,
     tensor::TensorView hiddenStates,
-    hypermoe::runtime::cache::KVCache* kvCache) {
+    hypermoe::runtime::cache::KVCacheBase* kvCache) {
     context.validate();
     if (!hiddenStates || hiddenStates.shape().rank() != 2 ||
         hiddenStates.shape().dimensions()[0] != context.batchSize ||
@@ -149,7 +150,8 @@ ModelExecutionResult TransformerModelRuntime::executeImpl(
     if (kvCache &&
         (kvCache->layerCount() != architecture_.layerCount ||
          kvCache->keyValueHeads() != architecture_.keyValueHeads ||
-         kvCache->headDimension() != architecture_.headDimension)) {
+         kvCache->headDimension() != architecture_.headDimension ||
+         kvCache->device() != backend_->device())) {
         throw std::invalid_argument("model architecture and session KV cache disagree");
     }
     ModelExecutionResult modelResult;

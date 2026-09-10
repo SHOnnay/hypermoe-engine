@@ -15,7 +15,7 @@ namespace hypermoe::tensor {
 class TensorBackend;
 }
 namespace hypermoe::runtime::cache {
-class KVCache;
+class KVCacheBase;
 }
 namespace hypermoe::transformer::embedding {
 class Embedding;
@@ -55,13 +55,16 @@ public:
     [[nodiscard]] ModelForwardResult forward(
         hypermoe::runtime::InferenceContext& context,
         std::span<const std::uint32_t> tokenIds,
-        hypermoe::runtime::cache::KVCache& kvCache);
+        hypermoe::runtime::cache::KVCacheBase& kvCache);
     [[nodiscard]] const ModelArchitecture& architecture() const noexcept;
+    [[nodiscard]] tensor::Device device() const noexcept;
+    [[nodiscard]] tensor::Tensor materializeHost(tensor::TensorView value) const;
     [[nodiscard]] bool tiedWeightsShareStorage() const noexcept;
 
 private:
     ModelArchitecture architecture_;
     std::shared_ptr<TransformerModelRuntime> transformer_;
+    std::shared_ptr<tensor::TensorBackend> backend_;
     std::shared_ptr<transformer::embedding::Embedding> embedding_;
     std::shared_ptr<transformer::output::FinalNorm> finalNorm_;
     std::shared_ptr<transformer::output::LMHead> lmHead_;
@@ -72,7 +75,7 @@ private:
     [[nodiscard]] ModelForwardResult forwardImpl(
         hypermoe::runtime::InferenceContext& context,
         std::span<const std::uint32_t> tokenIds,
-        hypermoe::runtime::cache::KVCache* kvCache);
+        hypermoe::runtime::cache::KVCacheBase* kvCache);
 };
 
 } // namespace hypermoe::models::runtime

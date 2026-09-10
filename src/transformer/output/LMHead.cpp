@@ -1,6 +1,7 @@
 #include "transformer/output/LMHead.hpp"
 
 #include "tensor/backend/TensorBackend.hpp"
+#include "tensor/backend/CpuTensorBackend.hpp"
 
 #include <stdexcept>
 #include <utility>
@@ -17,8 +18,7 @@ LMHead::LMHead(std::shared_ptr<tensor::TensorBackend> backend,
       vocabularySize_(vocabularySize),
       weightLayout_(weightLayout),
       tiedEmbeddings_(tiedEmbeddings) {
-    if (!backend_ || !backend_->available() ||
-        backend_->device() != tensor::Device::cpu() || hiddenDimension_ == 0 ||
+    if (!backend_ || !backend_->available() || hiddenDimension_ == 0 ||
         vocabularySize_ == 0 ||
         (tiedEmbeddings_ && weightLayout_ != models::TensorLayout::OutputInput)) {
         throw std::invalid_argument("LM head configuration is invalid");
@@ -34,19 +34,36 @@ tensor::Tensor LMHead::execute(tensor::TensorView hiddenStates,
         : tensor::Shape{vocabularySize_, hiddenDimension_};
     if (!hiddenOwner || !weightOwner || !hiddenStates || !weights ||
         !hiddenStates.isContiguous() || !weights.isContiguous() ||
-        hiddenStates.device() != tensor::Device::cpu() ||
-        weights.device() != tensor::Device::cpu() ||
+        hiddenStates.device() != backend_->device() ||
+        weights.device() != backend_->device() ||
         hiddenStates.dtype() != tensor::DType::FP32 ||
         weights.dtype() != tensor::DType::FP32 ||
         hiddenStates.shape().rank() != 2 ||
         hiddenStates.shape().dimensions()[1] != hiddenDimension_ ||
         weights.shape() != expectedWeights) {
         throw std::invalid_argument(
-            "LM head requires compatible contiguous CPU FP32 tensors");
+            "LM head requires compatible contiguous backend FP32 tensors");
     }
     const auto tokenCount = hiddenStates.shape().dimensions()[0];
     auto logits = backend_->allocateTensor(
         {tokenCount, vocabularySize_}, tensor::DType::FP32);
+    if (weightLayout_ == models::TensorLayout::InputOutput) {
+        backend_->matmul(hiddenStates, weights, logits.view());
+        backend_->synchronize();
+        return logits;
+    }
+    if (backend_->device().type == tensor::DeviceType::CUDA) {
+        auto cpu = std::make_shared<tensor::CpuTensorBackend>();
+        auto hostHidden = cpu->allocateTensor(hiddenStates.shape(), hiddenStates.dtype());
+        auto hostWeights = cpu->allocateTensor(weights.shape(), weights.dtype());
+        backend_->copyTensor(hiddenStates, hostHidden.view());
+        backend_->copyTensor(weights, hostWeights.view());
+        LMHead reference(cpu, hiddenDimension_, vocabularySize_, weightLayout_,
+                         tiedEmbeddings_);
+        auto hostLogits = reference.execute(hostHidden.view(), hostWeights.view());
+        backend_->copyTensor(hostLogits.view(), logits.view());
+        return logits;
+    }
     const auto* hidden = static_cast<const float*>(hiddenStates.data());
     const auto* matrix = static_cast<const float*>(weights.data());
     auto* output = static_cast<float*>(logits.data());

@@ -1,6 +1,8 @@
 #include "transformer/norm/RMSNorm.hpp"
 
 #include "tensor/backend/TensorBackend.hpp"
+#include "tensor/backend/CpuTensorBackend.hpp"
+#include "tensor/backend/CudaTensorBackend.hpp"
 
 #include <cmath>
 #include <stdexcept>
@@ -14,17 +16,19 @@ RMSNorm::RMSNorm(std::shared_ptr<tensor::TensorBackend> backend,
     : backend_(std::move(backend)),
       hiddenDimension_(hiddenDimension),
       epsilon_(epsilon) {
-    if (!backend_ || !backend_->available() ||
-        backend_->device() != tensor::Device::cpu()) {
-        throw std::invalid_argument("CPU RMSNorm requires an available CPU backend");
+    if (!backend_ || !backend_->available()) {
+        throw std::invalid_argument("RMSNorm requires an available tensor backend");
     }
     if (hiddenDimension_ == 0 || !std::isfinite(epsilon_) || epsilon_ <= 0.0F) {
         throw std::invalid_argument("RMSNorm configuration is invalid");
     }
 }
 
-std::string_view RMSNorm::name() const noexcept { return "CPU reference RMSNorm"; }
-tensor::Device RMSNorm::device() const noexcept { return tensor::Device::cpu(); }
+std::string_view RMSNorm::name() const noexcept {
+    return device().type == tensor::DeviceType::CPU
+        ? "CPU reference RMSNorm" : "CUDA cuBLAS RMSNorm";
+}
+tensor::Device RMSNorm::device() const noexcept { return backend_->device(); }
 std::size_t RMSNorm::hiddenDimension() const noexcept { return hiddenDimension_; }
 float RMSNorm::epsilon() const noexcept { return epsilon_; }
 
@@ -41,7 +45,17 @@ tensor::Tensor RMSNorm::execute(tensor::TensorView input,
         input.shape().dimensions()[1] != hiddenDimension_ ||
         weight.shape().dimensions()[0] != hiddenDimension_) {
         throw std::invalid_argument(
-            "RMSNorm requires compatible contiguous CPU FP32 tensors");
+            "RMSNorm requires compatible contiguous backend FP32 tensors");
+    }
+    if (device().type == tensor::DeviceType::CUDA) {
+        auto* cuda = dynamic_cast<tensor::CudaTensorBackend*>(backend_.get());
+        if (!cuda) {
+            throw std::invalid_argument(
+                "CUDA RMSNorm requires the concrete CUDA tensor backend");
+        }
+        auto output = backend_->allocateTensor(input.shape(), tensor::DType::FP32);
+        cuda->rmsNorm(input, weight, output.view(), epsilon_);
+        return output;
     }
     auto output = backend_->allocateTensor(input.shape(), tensor::DType::FP32);
     const auto* source = static_cast<const float*>(input.data());

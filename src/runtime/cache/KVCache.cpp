@@ -140,5 +140,6 @@ std::size_t KVCache::maximumSequenceLength() const noexcept {
 }
 std::size_t KVCache::keyValueHeads() const noexcept { return keyValueHeads_; }
 std::size_t KVCache::headDimension() const noexcept { return headDimension_; }
+tensor::Device KVCache::device() const noexcept { return tensor::Device::cpu(); }
 
 } // namespace hypermoe::runtime::cache

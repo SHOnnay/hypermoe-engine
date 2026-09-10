@@ -15,19 +15,22 @@
 namespace hypermoe::generation {
 namespace {
 
-std::span<const float> lastTokenLogits(
+std::vector<float> lastTokenLogits(
+    runtime::generation::GenerationModel& model,
     const runtime::generation::ForwardState& state,
     std::size_t vocabularySize) {
     const auto& logits = state.logits();
-    if (!state.valid() || logits.device() != tensor::Device::cpu() ||
-        logits.dtype() != tensor::DType::FP32 || !logits.isContiguous() ||
+    if (!state.valid() || logits.dtype() != tensor::DType::FP32 ||
+        !logits.isContiguous() ||
         logits.shape().rank() != 2 ||
         logits.shape().dimensions()[1] != vocabularySize) {
         throw std::runtime_error("generation model returned incompatible logits");
     }
+    auto host = model.materializeHost(logits.view());
     const auto tokenCount = logits.shape().dimensions()[0];
-    const auto* values = static_cast<const float*>(logits.data());
-    return {values + (tokenCount - 1) * vocabularySize, vocabularySize};
+    const auto* values = static_cast<const float*>(host.data());
+    return {values + (tokenCount - 1) * vocabularySize,
+            values + tokenCount * vocabularySize};
 }
 
 } // namespace
@@ -77,7 +80,8 @@ GenerationResult Generator::generate(
             "prompt and requested output exceed the bounded KV cache sequence");
     }
     runtime::generation::InferenceSession session(
-        model_, cacheManager_, config.maximumNewTokens, config.stopTokenIds);
+        model_, cacheManager_, config.maximumNewTokens, config.stopTokenIds,
+        config.inference);
     runtime::generation::Decoder decoder;
     stageStart = std::chrono::steady_clock::now();
     decoder.prefill(session, promptTokens);
@@ -86,8 +90,9 @@ GenerationResult Generator::generate(
 
     Sampler sampler(config.sampling);
     while (!session.generationState().finished()) {
-        const auto token = sampler.sample(
-            lastTokenLogits(session.forwardState(), model_->vocabularySize()));
+        const auto logits = lastTokenLogits(
+            *model_, session.forwardState(), model_->vocabularySize());
+        const auto token = sampler.sample(logits);
         if (session.generationState().appendGenerated(token)) break;
         stageStart = std::chrono::steady_clock::now();
         decoder.decode(session, token);

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(HyperMoE VERSION 0.16.0 LANGUAGES CXX)
+project(HyperMoE VERSION 0.17.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -127,6 +127,7 @@ add_library(hypermoe
     src/experts/ExpertBatch.cpp
     src/runtime/InferenceContext.cpp
     src/runtime/cache/KVCache.cpp
+    src/runtime/cache/CudaKVCache.cpp
     src/runtime/cache/KVCacheManager.cpp
     src/runtime/generation/ForwardState.cpp
     src/runtime/generation/GenerationModel.cpp
@@ -151,6 +152,7 @@ add_library(hypermoe
     src/router/RouterConfig.cpp
     src/router/Router.cpp
     src/router/CpuRouterBackend.cpp
+    src/router/CudaRouterBackend.cpp
     src/prediction/ExpertHistory.cpp
     src/prediction/TransitionDatabase.cpp
     src/prediction/ExpertPredictor.cpp
@@ -159,6 +161,7 @@ add_library(hypermoe
     src/tensor/quantization/QuantizationPolicy.cpp
     src/transformer/MoELayer.cpp
     src/transformer/attention/CpuAttention.cpp
+    src/transformer/attention/CudaAttention.cpp
     src/transformer/norm/RMSNorm.cpp
     src/transformer/position/RoPE.cpp
     src/transformer/runtime/TransformerBlock.cpp
@@ -261,6 +264,10 @@ if(HYPERMOE_BUILD_TESTS)
     add_executable(hypermoe_phase15_16_tests tests/phase15_16_tests.cpp)
     target_link_libraries(hypermoe_phase15_16_tests PRIVATE HyperMoE::hypermoe)
     add_test(NAME hypermoe_phase15_16 COMMAND hypermoe_phase15_16_tests)
+
+    add_executable(hypermoe_phase17_tests tests/phase17_tests.cpp)
+    target_link_libraries(hypermoe_phase17_tests PRIVATE HyperMoE::hypermoe)
+    add_test(NAME hypermoe_phase17 COMMAND hypermoe_phase17_tests)
 endif()
 
 if(HYPERMOE_BUILD_BENCHMARKS)
@@ -325,6 +332,10 @@ if(HYPERMOE_BUILD_BENCHMARKS)
     add_executable(hypermoe_generation_benchmark
         benchmarks/generation/generation_benchmark.cpp)
     target_link_libraries(hypermoe_generation_benchmark PRIVATE HyperMoE::hypermoe)
+
+    add_executable(hypermoe_gpu_inference_benchmark
+        benchmarks/gpu_inference/gpu_inference_benchmark.cpp)
+    target_link_libraries(hypermoe_gpu_inference_benchmark PRIVATE HyperMoE::hypermoe)
 
     add_executable(hypermoe_model_inspect
         tools/model_inspect/model_inspect.cpp)

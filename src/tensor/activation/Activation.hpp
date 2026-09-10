@@ -31,8 +31,9 @@ enum class ActivationType {
 [[nodiscard]] float silu(float value) noexcept;
 [[nodiscard]] float gelu(float value) noexcept;
 
-// Dispatches through the selected tensor backend. CUDA tensors currently use a
-// checked host-staged reference path, leaving a stable seam for a future kernel.
+// Dispatches through the selected tensor backend. CUDA tensors use a checked
+// host-staged reference operation while preserving device-resident inputs and
+// outputs; this is intentionally a correctness path until a kernel is profiled.
 void apply(ActivationType type,
            TensorBackend& backend,
            TensorView input,

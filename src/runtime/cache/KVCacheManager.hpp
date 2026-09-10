@@ -8,13 +8,15 @@
 #include <mutex>
 #include <unordered_map>
 
+namespace hypermoe::tensor { class TensorBackend; }
+
 namespace hypermoe::runtime::cache {
 
 using KVCacheSessionId = std::uint64_t;
 
 struct KVCacheAllocation {
     KVCacheSessionId sessionId{};
-    std::shared_ptr<KVCache> cache;
+    std::shared_ptr<KVCacheBase> cache;
     std::size_t reservedBytes{};
 };
 
@@ -32,7 +34,8 @@ public:
                    std::size_t maximumSequenceLength,
                    std::size_t keyValueHeads,
                    std::size_t headDimension,
-                   std::size_t memoryLimitBytes);
+                   std::size_t memoryLimitBytes,
+                   std::shared_ptr<tensor::TensorBackend> backend = {});
 
     [[nodiscard]] KVCacheAllocation allocateSession();
     void releaseSession(KVCacheSessionId sessionId);
@@ -43,6 +46,7 @@ public:
     [[nodiscard]] std::size_t keyValueHeads() const noexcept;
     [[nodiscard]] std::size_t headDimension() const noexcept;
     [[nodiscard]] std::size_t bytesPerSession() const noexcept;
+    [[nodiscard]] tensor::Device device() const noexcept;
 
 private:
     std::size_t layerCount_{};
@@ -55,7 +59,8 @@ private:
     std::size_t reservedBytes_{};
     KVCacheSessionId nextSessionId_{1};
     mutable std::mutex mutex_;
-    std::unordered_map<KVCacheSessionId, std::shared_ptr<KVCache>> sessions_;
+    std::shared_ptr<tensor::TensorBackend> backend_;
+    std::unordered_map<KVCacheSessionId, std::shared_ptr<KVCacheBase>> sessions_;
 };
 
 } // namespace hypermoe::runtime::cache

@@ -1,11 +1,13 @@
 # HyperMoE Engine
 
 HyperMoE is a C++20 inference-runtime project for hierarchical Mixture-of-Experts
-memory management across VRAM, pinned RAM, ordinary RAM, and NVMe. Phase 14 adds
-a manifest-driven token embedding, complete multi-layer forward execution, final
-RMSNorm, tied or separate vocabulary projection, and vocabulary logits. Phases
-15 and 16 add the portable incremental generation orchestration described below;
-there is intentionally no server, chat API, or custom CUDA kernel yet.
+memory management across VRAM, pinned RAM, ordinary RAM, and NVMe. Phase 17
+connects the existing model and generation abstractions to CUDA tensor ownership:
+cuBLAS executes FP32 GEMM, expert projections, residual addition, elementwise
+multiplication, and attention projections; CUDA KV caches retain keys and values
+in VRAM. CPU remains a complete fallback. Reference activation, RMSNorm, routing,
+RoPE, softmax, and grouped expert gather/scatter use explicit host staging on the
+CUDA path until dedicated kernels are validated. There is no server or chat API.
 
 Phase 14.5 hardens the same runtime contracts across 64-bit little-endian
 Windows, Linux, and macOS targets. It adds explicit wire-enum values, alignment
@@ -84,12 +86,15 @@ for CI once every compiler's warning baseline is clean. See
 The deterministic CPU generation benchmark writes a JSON report:
 
 ```sh
-./build/hypermoe_generation_benchmark generation_report.json.report
+./build/hypermoe_generation_benchmark generation_report.json
+./build/hypermoe_gpu_inference_benchmark gpu_inference_report.json
 ```
 
 See [incremental generation](docs/components/generation.md), the
 [tokenizer boundary](docs/components/tokenizer.md), and the
-[KV cache runtime](docs/components/kv-cache-runtime.md).
+[KV cache runtime](docs/components/kv-cache-runtime.md). See
+[CUDA inference](docs/components/cuda-inference.md) for the current accelerated
+operations, staged correctness paths, backend selection, and validation rules.
 
 The Phase 1 simulator accepts `--requests`, `--seed`, `--vram-mib`, and
 `--ram-mib`. The Phase 2 simulator accepts `--tokens`, `--seed`, `--read-mode`

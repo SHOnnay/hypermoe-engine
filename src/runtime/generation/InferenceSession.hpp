@@ -3,6 +3,7 @@
 #include "runtime/cache/KVCacheManager.hpp"
 #include "runtime/generation/ForwardState.hpp"
 #include "runtime/generation/GenerationState.hpp"
+#include "runtime/generation/InferenceConfig.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -18,7 +19,8 @@ public:
     InferenceSession(std::shared_ptr<GenerationModel> model,
                      std::shared_ptr<cache::KVCacheManager> cacheManager,
                      std::size_t maximumNewTokens,
-                     std::span<const std::uint32_t> stopTokenIds = {});
+                     std::span<const std::uint32_t> stopTokenIds = {},
+                     InferenceConfig config = {});
     ~InferenceSession();
 
     InferenceSession(const InferenceSession&) = delete;
@@ -27,7 +29,7 @@ public:
     InferenceSession& operator=(InferenceSession&&) = delete;
 
     [[nodiscard]] GenerationModel& model() const noexcept;
-    [[nodiscard]] cache::KVCache& kvCache() const noexcept;
+    [[nodiscard]] cache::KVCacheBase& kvCache() const noexcept;
     [[nodiscard]] cache::KVCacheSessionId id() const noexcept;
     [[nodiscard]] GenerationState& generationState() noexcept;
     [[nodiscard]] const GenerationState& generationState() const noexcept;
@@ -38,7 +40,7 @@ private:
     std::shared_ptr<GenerationModel> model_;
     std::shared_ptr<cache::KVCacheManager> cacheManager_;
     cache::KVCacheSessionId id_{};
-    std::shared_ptr<cache::KVCache> kvCache_;
+    std::shared_ptr<cache::KVCacheBase> kvCache_;
     GenerationState generationState_;
     ForwardState forwardState_;
 };

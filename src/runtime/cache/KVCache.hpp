@@ -19,7 +19,25 @@ struct KVCacheSnapshot {
     [[nodiscard]] std::size_t tokenCount() const noexcept;
 };
 
-class KVCache {
+class KVCacheBase {
+public:
+    virtual ~KVCacheBase() = default;
+    virtual void append(std::size_t layer, std::uint64_t firstPosition,
+                        tensor::TensorView keys, tensor::TensorView values) = 0;
+    [[nodiscard]] virtual KVCacheSnapshot snapshot(std::size_t layer) const = 0;
+    [[nodiscard]] virtual std::size_t tokenCount(std::size_t layer) const = 0;
+    [[nodiscard]] virtual std::size_t memoryUsageBytes() const = 0;
+    [[nodiscard]] virtual std::size_t maximumMemoryUsageBytes() const = 0;
+    virtual void clear(std::size_t layer) = 0;
+    virtual void reset() = 0;
+    [[nodiscard]] virtual std::size_t layerCount() const noexcept = 0;
+    [[nodiscard]] virtual std::size_t maximumSequenceLength() const noexcept = 0;
+    [[nodiscard]] virtual std::size_t keyValueHeads() const noexcept = 0;
+    [[nodiscard]] virtual std::size_t headDimension() const noexcept = 0;
+    [[nodiscard]] virtual tensor::Device device() const noexcept = 0;
+};
+
+class KVCache final : public KVCacheBase {
 public:
     KVCache(std::size_t layerCount,
             std::size_t maximumSequenceLength,
@@ -29,18 +47,19 @@ public:
     void append(std::size_t layer,
                 std::uint64_t firstPosition,
                 tensor::TensorView keys,
-                tensor::TensorView values);
-    [[nodiscard]] KVCacheSnapshot snapshot(std::size_t layer) const;
-    [[nodiscard]] std::size_t tokenCount(std::size_t layer) const;
-    [[nodiscard]] std::size_t memoryUsageBytes() const;
-    [[nodiscard]] std::size_t maximumMemoryUsageBytes() const;
-    void clear(std::size_t layer);
-    void reset();
+                tensor::TensorView values) override;
+    [[nodiscard]] KVCacheSnapshot snapshot(std::size_t layer) const override;
+    [[nodiscard]] std::size_t tokenCount(std::size_t layer) const override;
+    [[nodiscard]] std::size_t memoryUsageBytes() const override;
+    [[nodiscard]] std::size_t maximumMemoryUsageBytes() const override;
+    void clear(std::size_t layer) override;
+    void reset() override;
 
-    [[nodiscard]] std::size_t layerCount() const noexcept;
-    [[nodiscard]] std::size_t maximumSequenceLength() const noexcept;
-    [[nodiscard]] std::size_t keyValueHeads() const noexcept;
-    [[nodiscard]] std::size_t headDimension() const noexcept;
+    [[nodiscard]] std::size_t layerCount() const noexcept override;
+    [[nodiscard]] std::size_t maximumSequenceLength() const noexcept override;
+    [[nodiscard]] std::size_t keyValueHeads() const noexcept override;
+    [[nodiscard]] std::size_t headDimension() const noexcept override;
+    [[nodiscard]] tensor::Device device() const noexcept override;
 
 private:
     struct LayerStorage {

@@ -12,7 +12,7 @@ namespace hypermoe::models::runtime {
 class ModelRuntime;
 }
 namespace hypermoe::runtime::cache {
-class KVCache;
+class KVCacheBase;
 }
 
 namespace hypermoe::runtime::generation {
@@ -25,10 +25,13 @@ public:
     [[nodiscard]] virtual std::size_t layerCount() const noexcept = 0;
     [[nodiscard]] virtual std::size_t keyValueHeads() const noexcept = 0;
     [[nodiscard]] virtual std::size_t headDimension() const noexcept = 0;
+    [[nodiscard]] virtual tensor::Device device() const noexcept = 0;
+    [[nodiscard]] virtual tensor::Tensor materializeHost(
+        tensor::TensorView value) const;
     [[nodiscard]] virtual ForwardPass forward(
         InferenceContext& context,
         std::span<const std::uint32_t> tokenIds,
-        cache::KVCache& kvCache) = 0;
+        cache::KVCacheBase& kvCache) = 0;
 };
 
 class ModelRuntimeGenerationModel final : public GenerationModel {
@@ -41,10 +44,13 @@ public:
     [[nodiscard]] std::size_t layerCount() const noexcept override;
     [[nodiscard]] std::size_t keyValueHeads() const noexcept override;
     [[nodiscard]] std::size_t headDimension() const noexcept override;
+    [[nodiscard]] tensor::Device device() const noexcept override;
+    [[nodiscard]] tensor::Tensor materializeHost(
+        tensor::TensorView value) const override;
     [[nodiscard]] ForwardPass forward(
         InferenceContext& context,
         std::span<const std::uint32_t> tokenIds,
-        cache::KVCache& kvCache) override;
+        cache::KVCacheBase& kvCache) override;
 
 private:
     std::shared_ptr<models::runtime::ModelRuntime> runtime_;

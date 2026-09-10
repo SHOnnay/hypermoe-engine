@@ -9,6 +9,7 @@
 
 #include <chrono>
 #include <climits>
+#include <cmath>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -294,14 +295,34 @@ void CudaTensorBackend::add(TensorView left,
     [[maybe_unused]] const auto rightOwner = pin(right, "CUDA add");
     [[maybe_unused]] const auto outputOwner = pin(output, "CUDA add");
     validateCudaElementwise(left, right, output, impl_->ordinal, "CUDA add");
-    CpuTensorBackend cpu(impl_->profiler);
-    auto hostLeft = cpu.allocateTensor(left.shape(), left.dtype());
-    auto hostRight = cpu.allocateTensor(right.shape(), right.dtype());
-    auto hostOutput = cpu.allocateTensor(output.shape(), output.dtype());
-    copyTensor(left, hostLeft);
-    copyTensor(right, hostRight);
-    cpu.add(hostLeft, hostRight, hostOutput);
-    copyTensor(hostOutput, output);
+    if (left.data() == output.data() || right.data() == output.data()) {
+        throw std::invalid_argument("CUDA add output cannot alias an input");
+    }
+    const auto elements = left.shape().elementCount();
+    if (elements > static_cast<std::size_t>(INT_MAX)) {
+        throw std::overflow_error("CUDA add exceeds cuBLAS integer limits");
+    }
+#ifdef HYPERMOE_HAS_CUBLAS
+    const auto count = static_cast<int>(elements);
+    const float one = 1.0F;
+    const auto start = std::chrono::steady_clock::now();
+    checkCublas(cublasScopy(impl_->handle, count,
+                            static_cast<const float*>(left.data()), 1,
+                            static_cast<float*>(output.mutableData()), 1),
+                "cublasScopy(add)");
+    checkCublas(cublasSaxpy(impl_->handle, count, &one,
+                            static_cast<const float*>(right.data()), 1,
+                            static_cast<float*>(output.mutableData()), 1),
+                "cublasSaxpy(add)");
+    impl_->backend->synchronize(
+        impl_->streams->stream(backend::CudaStreamRole::Compute));
+    if (impl_->profiler) {
+        impl_->profiler->recordKernelTime(std::chrono::steady_clock::now() - start);
+    }
+#else
+    (void)elements;
+    throw std::runtime_error("cuBLAS support is unavailable");
+#endif
 }
 
 void CudaTensorBackend::mul(TensorView left,
@@ -312,14 +333,88 @@ void CudaTensorBackend::mul(TensorView left,
     [[maybe_unused]] const auto rightOwner = pin(right, "CUDA multiply");
     [[maybe_unused]] const auto outputOwner = pin(output, "CUDA multiply");
     validateCudaElementwise(left, right, output, impl_->ordinal, "CUDA multiply");
-    CpuTensorBackend cpu(impl_->profiler);
-    auto hostLeft = cpu.allocateTensor(left.shape(), left.dtype());
-    auto hostRight = cpu.allocateTensor(right.shape(), right.dtype());
-    auto hostOutput = cpu.allocateTensor(output.shape(), output.dtype());
-    copyTensor(left, hostLeft);
-    copyTensor(right, hostRight);
-    cpu.mul(hostLeft, hostRight, hostOutput);
-    copyTensor(hostOutput, output);
+    if (left.data() == output.data() || right.data() == output.data()) {
+        throw std::invalid_argument("CUDA multiply output cannot alias an input");
+    }
+    const auto elements = left.shape().elementCount();
+    if (elements > static_cast<std::size_t>(INT_MAX)) {
+        throw std::overflow_error("CUDA multiply exceeds cuBLAS integer limits");
+    }
+#ifdef HYPERMOE_HAS_CUBLAS
+    const auto count = static_cast<int>(elements);
+    const auto start = std::chrono::steady_clock::now();
+    checkCublas(cublasSdgmm(
+                    impl_->handle, CUBLAS_SIDE_RIGHT, 1, count,
+                    static_cast<const float*>(left.data()), 1,
+                    static_cast<const float*>(right.data()), 1,
+                    static_cast<float*>(output.mutableData()), 1),
+                "cublasSdgmm(multiply)");
+    impl_->backend->synchronize(
+        impl_->streams->stream(backend::CudaStreamRole::Compute));
+    if (impl_->profiler) {
+        impl_->profiler->recordKernelTime(std::chrono::steady_clock::now() - start);
+    }
+#else
+    (void)elements;
+    throw std::runtime_error("cuBLAS support is unavailable");
+#endif
+}
+
+void CudaTensorBackend::rmsNorm(TensorView input,
+                                TensorView weight,
+                                TensorView output,
+                                float epsilon) {
+    if (!available()) throw std::runtime_error("CUDA tensor backend is unavailable");
+    [[maybe_unused]] const auto inputOwner = pin(input, "CUDA RMSNorm");
+    [[maybe_unused]] const auto weightOwner = pin(weight, "CUDA RMSNorm");
+    [[maybe_unused]] const auto outputOwner = pin(output, "CUDA RMSNorm");
+    if (!inputOwner || !weightOwner || !outputOwner || !input || !weight || !output ||
+        input.device() != device() || weight.device() != device() ||
+        output.device() != device() || input.dtype() != DType::FP32 ||
+        weight.dtype() != DType::FP32 || output.dtype() != DType::FP32 ||
+        !input.isContiguous() || !weight.isContiguous() || !output.isContiguous() ||
+        !output.writable() || input.shape().rank() != 2 || weight.shape().rank() != 1 ||
+        output.shape() != input.shape() ||
+        weight.shape().dimensions()[0] != input.shape().dimensions()[1] ||
+        !std::isfinite(epsilon) || epsilon <= 0.0F) {
+        throw std::invalid_argument("CUDA RMSNorm tensor metadata is incompatible");
+    }
+    const auto rows = input.shape().dimensions()[0];
+    const auto width = input.shape().dimensions()[1];
+    if (width > static_cast<std::size_t>(INT_MAX)) {
+        throw std::overflow_error("CUDA RMSNorm width exceeds cuBLAS integer limits");
+    }
+#ifdef HYPERMOE_HAS_CUBLAS
+    const auto count = static_cast<int>(width);
+    const auto* source = static_cast<const float*>(input.data());
+    const auto* scale = static_cast<const float*>(weight.data());
+    auto* destination = static_cast<float*>(output.mutableData());
+    const auto start = std::chrono::steady_clock::now();
+    for (std::size_t row = 0; row < rows; ++row) {
+        float norm{};
+        checkCublas(cublasSnrm2(impl_->handle, count, source + row * width, 1, &norm),
+                    "cublasSnrm2(RMSNorm)");
+        const auto inverse = 1.0F / std::sqrt(
+            (norm * norm) / static_cast<float>(width) + epsilon);
+        checkCublas(cublasSdgmm(
+                        impl_->handle, CUBLAS_SIDE_RIGHT, 1, count,
+                        source + row * width, 1, scale, 1,
+                        destination + row * width, 1),
+                    "cublasSdgmm(RMSNorm)");
+        checkCublas(cublasSscal(impl_->handle, count, &inverse,
+                                destination + row * width, 1),
+                    "cublasSscal(RMSNorm)");
+    }
+    impl_->backend->synchronize(
+        impl_->streams->stream(backend::CudaStreamRole::Compute));
+    if (impl_->profiler) {
+        impl_->profiler->recordKernelTime(std::chrono::steady_clock::now() - start);
+    }
+#else
+    (void)rows;
+    (void)width;
+    throw std::runtime_error("cuBLAS support is unavailable");
+#endif
 }
 
 Tensor CudaTensorBackend::reshape(const Tensor& tensor, Shape shape) {

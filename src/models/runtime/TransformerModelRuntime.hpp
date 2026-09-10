@@ -14,7 +14,7 @@
 #include <vector>
 
 namespace hypermoe::runtime::cache {
-class KVCache;
+class KVCacheBase;
 }
 namespace hypermoe::tensor {
 class TensorBackend;
@@ -66,7 +66,7 @@ public:
         std::shared_ptr<transformer::norm::Norm> postAttentionNormalization,
         std::shared_ptr<transformer::MoELayer> moe,
         std::shared_ptr<tensor::TensorBackend> backend,
-        std::shared_ptr<hypermoe::runtime::cache::KVCache> kvCache = {});
+        std::shared_ptr<hypermoe::runtime::cache::KVCacheBase> kvCache = {});
 
     [[nodiscard]] ModelExecutionResult execute(
         hypermoe::runtime::InferenceContext& context,
@@ -74,7 +74,7 @@ public:
     [[nodiscard]] ModelExecutionResult execute(
         hypermoe::runtime::InferenceContext& context,
         tensor::TensorView hiddenStates,
-        hypermoe::runtime::cache::KVCache& kvCache);
+        hypermoe::runtime::cache::KVCacheBase& kvCache);
     [[nodiscard]] const ModelArchitecture& architecture() const noexcept;
     [[nodiscard]] const RuntimeTensorMap& tensors() const noexcept;
 
@@ -85,13 +85,13 @@ private:
     std::shared_ptr<transformer::norm::Norm> postAttentionNormalization_;
     std::shared_ptr<tensor::TensorBackend> backend_;
     transformer::runtime::TransformerBlock block_;
-    std::shared_ptr<hypermoe::runtime::cache::KVCache> kvCache_;
+    std::shared_ptr<hypermoe::runtime::cache::KVCacheBase> kvCache_;
     std::vector<transformer::runtime::TransformerBlockWeights> weights_;
 
     [[nodiscard]] ModelExecutionResult executeImpl(
         hypermoe::runtime::InferenceContext& context,
         tensor::TensorView hiddenStates,
-        hypermoe::runtime::cache::KVCache* kvCache);
+        hypermoe::runtime::cache::KVCacheBase* kvCache);
 };
 
 } // namespace hypermoe::models::runtime

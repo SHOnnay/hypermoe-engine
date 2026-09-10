@@ -11,7 +11,8 @@ InferenceSession::InferenceSession(
     std::shared_ptr<GenerationModel> model,
     std::shared_ptr<cache::KVCacheManager> cacheManager,
     std::size_t maximumNewTokens,
-    std::span<const std::uint32_t> stopTokenIds)
+    std::span<const std::uint32_t> stopTokenIds,
+    InferenceConfig config)
     : model_(std::move(model)),
       cacheManager_(std::move(cacheManager)),
       generationState_(maximumNewTokens, stopTokenIds) {
@@ -19,6 +20,8 @@ InferenceSession::InferenceSession(
         model_->layerCount() != cacheManager_->layerCount() ||
         model_->keyValueHeads() != cacheManager_->keyValueHeads() ||
         model_->headDimension() != cacheManager_->headDimension() ||
+        model_->device() != config.device ||
+        model_->device() != cacheManager_->device() ||
         maximumNewTokens > cacheManager_->maximumSequenceLength()) {
         throw std::invalid_argument(
             "inference session model and KV cache manager are incompatible");
@@ -40,7 +43,7 @@ InferenceSession::~InferenceSession() {
 }
 
 GenerationModel& InferenceSession::model() const noexcept { return *model_; }
-cache::KVCache& InferenceSession::kvCache() const noexcept { return *kvCache_; }
+cache::KVCacheBase& InferenceSession::kvCache() const noexcept { return *kvCache_; }
 cache::KVCacheSessionId InferenceSession::id() const noexcept { return id_; }
 GenerationState& InferenceSession::generationState() noexcept {
     return generationState_;

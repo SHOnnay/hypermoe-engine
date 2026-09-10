@@ -1,6 +1,7 @@
 #include "models/runtime/ModelRuntime.hpp"
 
 #include "tensor/backend/TensorBackend.hpp"
+#include "tensor/backend/CpuTensorBackend.hpp"
 #include "transformer/embedding/Embedding.hpp"
 #include "transformer/output/FinalNorm.hpp"
 #include "transformer/output/LMHead.hpp"
@@ -14,8 +15,8 @@ ModelRuntime::ModelRuntime(const models::ModelManifest& manifest,
                            std::shared_ptr<TransformerModelRuntime> transformer,
                            std::shared_ptr<tensor::TensorBackend> backend)
     : architecture_(ModelArchitecture::fromManifest(manifest)),
-      transformer_(std::move(transformer)) {
-    if (!manifest.modelIO || !transformer_ || !backend ||
+      transformer_(std::move(transformer)), backend_(std::move(backend)) {
+    if (!manifest.modelIO || !transformer_ || !backend_ ||
         architecture_.vocabularySize == 0 ||
         transformer_->architecture().hiddenDimension !=
             architecture_.hiddenDimension ||
@@ -28,7 +29,7 @@ ModelRuntime::ModelRuntime(const models::ModelManifest& manifest,
         const auto* metadata = manifest.findTensor(name);
         const auto& value = transformer_->tensors().require(name);
         if (!metadata || metadata->shape != expected || value.shape() != expected ||
-            value.dtype() != tensor::DType::FP32 || value.device() != backend->device()) {
+            value.dtype() != tensor::DType::FP32 || value.device() != backend_->device()) {
             throw std::invalid_argument(
                 "model I/O runtime tensor disagrees with manifest or backend");
         }
@@ -44,12 +45,12 @@ ModelRuntime::ModelRuntime(const models::ModelManifest& manifest,
         : tensor::Shape{architecture_.vocabularySize, architecture_.hiddenDimension};
     lmHeadWeights_ = resolve(manifest.modelIO->lmHead.tensorName, headShape);
     embedding_ = std::make_shared<transformer::embedding::Embedding>(
-        backend, architecture_.vocabularySize, architecture_.hiddenDimension);
+        backend_, architecture_.vocabularySize, architecture_.hiddenDimension);
     finalNorm_ = std::make_shared<transformer::output::FinalNorm>(
-        backend, architecture_.hiddenDimension,
+        backend_, architecture_.hiddenDimension,
         architecture_.finalNormalization.epsilon);
     lmHead_ = std::make_shared<transformer::output::LMHead>(
-        std::move(backend), architecture_.hiddenDimension,
+        backend_, architecture_.hiddenDimension,
         architecture_.vocabularySize, manifest.modelIO->lmHead.layout,
         manifest.modelIO->tiedEmbeddings);
 }
@@ -63,14 +64,14 @@ ModelForwardResult ModelRuntime::forward(
 ModelForwardResult ModelRuntime::forward(
     hypermoe::runtime::InferenceContext& context,
     std::span<const std::uint32_t> tokenIds,
-    hypermoe::runtime::cache::KVCache& kvCache) {
+    hypermoe::runtime::cache::KVCacheBase& kvCache) {
     return forwardImpl(context, tokenIds, &kvCache);
 }
 
 ModelForwardResult ModelRuntime::forwardImpl(
     hypermoe::runtime::InferenceContext& context,
     std::span<const std::uint32_t> tokenIds,
-    hypermoe::runtime::cache::KVCache* kvCache) {
+    hypermoe::runtime::cache::KVCacheBase* kvCache) {
     context.validate();
     if (tokenIds.empty() || tokenIds.size() != context.batchSize ||
         context.hiddenDimension != architecture_.hiddenDimension) {
@@ -101,6 +102,25 @@ ModelForwardResult ModelRuntime::forwardImpl(
 
 const ModelArchitecture& ModelRuntime::architecture() const noexcept {
     return architecture_;
+}
+
+tensor::Device ModelRuntime::device() const noexcept {
+    return backend_->device();
+}
+
+tensor::Tensor ModelRuntime::materializeHost(tensor::TensorView value) const {
+    [[maybe_unused]] const auto owner = value.lockOwner();
+    if (!owner || !value || value.device() != device() || !value.isContiguous()) {
+        throw std::invalid_argument("model runtime cannot materialize incompatible tensor");
+    }
+    tensor::CpuTensorBackend cpu;
+    auto host = cpu.allocateTensor(value.shape(), value.dtype());
+    if (device() == tensor::Device::cpu()) {
+        cpu.copyTensor(value, host.view());
+    } else {
+        backend_->copyTensor(value, host.view());
+    }
+    return host;
 }
 
 bool ModelRuntime::tiedWeightsShareStorage() const noexcept {

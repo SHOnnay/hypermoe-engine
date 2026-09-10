@@ -35,6 +35,10 @@ public:
     void mul(TensorView left,
              TensorView right,
              TensorView output) override;
+    void rmsNorm(TensorView input,
+                 TensorView weight,
+                 TensorView output,
+                 float epsilon);
     [[nodiscard]] Tensor reshape(const Tensor& tensor, Shape shape) override;
     void synchronize() override;
 

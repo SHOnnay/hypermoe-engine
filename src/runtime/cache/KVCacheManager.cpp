@@ -1,7 +1,11 @@
 #include "runtime/cache/KVCacheManager.hpp"
 
+#include "runtime/cache/CudaKVCache.hpp"
+#include "tensor/backend/TensorBackend.hpp"
+
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 namespace hypermoe::runtime::cache {
 
@@ -9,12 +13,18 @@ KVCacheManager::KVCacheManager(std::size_t layerCount,
                                std::size_t maximumSequenceLength,
                                std::size_t keyValueHeads,
                                std::size_t headDimension,
-                               std::size_t memoryLimitBytes)
+                               std::size_t memoryLimitBytes,
+                               std::shared_ptr<tensor::TensorBackend> backend)
     : layerCount_(layerCount),
       maximumSequenceLength_(maximumSequenceLength),
       keyValueHeads_(keyValueHeads),
       headDimension_(headDimension),
-      memoryLimitBytes_(memoryLimitBytes) {
+      memoryLimitBytes_(memoryLimitBytes), backend_(std::move(backend)) {
+    if (backend_ && (!backend_->available() ||
+                     backend_->device().type != tensor::DeviceType::CUDA)) {
+        throw std::invalid_argument(
+            "KV cache manager device backend must be available CUDA");
+    }
     KVCache prototype(layerCount_, maximumSequenceLength_, keyValueHeads_,
                       headDimension_);
     bytesPerSession_ = prototype.maximumMemoryUsageBytes();
@@ -33,8 +43,14 @@ KVCacheAllocation KVCacheManager::allocateSession() {
         throw std::overflow_error("KV cache session ID space is exhausted");
     }
     const auto sessionId = nextSessionId_++;
-    auto cache = std::make_shared<KVCache>(
-        layerCount_, maximumSequenceLength_, keyValueHeads_, headDimension_);
+    std::shared_ptr<KVCacheBase> cache;
+    if (backend_) {
+        cache = std::make_shared<CudaKVCache>(
+            backend_, layerCount_, maximumSequenceLength_, keyValueHeads_, headDimension_);
+    } else {
+        cache = std::make_shared<KVCache>(
+            layerCount_, maximumSequenceLength_, keyValueHeads_, headDimension_);
+    }
     if (!sessions_.emplace(sessionId, cache).second) {
         throw std::logic_error("KV cache session ID collision");
     }
@@ -78,6 +94,9 @@ std::size_t KVCacheManager::headDimension() const noexcept {
 }
 std::size_t KVCacheManager::bytesPerSession() const noexcept {
     return bytesPerSession_;
+}
+tensor::Device KVCacheManager::device() const noexcept {
+    return backend_ ? backend_->device() : tensor::Device::cpu();
 }
 
 } // namespace hypermoe::runtime::cache

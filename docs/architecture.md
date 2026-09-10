@@ -366,6 +366,22 @@ last logits -> LogitsProcessor -> Sampler -> Decoder::decode -> generated IDs
   `ModelRuntimeGenerationModel` supplies the real forward-to-logits bridge.
 - `Tokenizer`, `LogitsProcessor`, `Sampler`, and `Generator` keep text mapping,
   probability policy, and decode control outside transformer execution.
+- `CudaTensorBackend` keeps FP32 GEMM and device copies on CUDA and now implements
+  residual addition with cuBLAS AXPY plus elementwise multiplication with cuBLAS
+  diagonal scaling. The CPU backend remains the numerical reference.
+- `CudaAttention` executes QKV and output projections through the CUDA tensor
+  backend. Its RoPE, causal score, softmax, and context stages deliberately use
+  the CPU reference path, then return device-resident tensors.
+- `CudaRouterBackend`, CUDA-capable `Embedding`, and `LMHead` provide checked
+  host-staged fallbacks for operations without a validated kernel. RMSNorm uses
+  cuBLAS norm, diagonal scaling, and vector scaling directly on device.
+- `KVCacheBase` separates the sequence contract from storage. `KVCache` owns host
+  arrays and `CudaKVCache` owns per-append device tensors; `KVCacheManager`
+  selects the implementation from its configured tensor backend.
+- `InferenceConfig` binds a session to an explicit device. The model, cache
+  manager, and requested device must agree before cache allocation or execution.
+- Generation materializes only the logits needed by the sampler through the
+  model adapter, preserving a single API for CPU and CUDA execution.
 
 ## Ownership and synchronization
 
@@ -391,7 +407,8 @@ addition to tier-independent events.
 ## Deferred intentionally
 
 - GGUF readers and DeepSeek/GLM/Kimi/Mixtral artifact importers
-- Native CUDA router, attention, RMSNorm, RoPE, grouped gather/scatter, and KV cache
+- Native CUDA router, softmax/context, RMSNorm, RoPE, embedding lookup,
+  activation, grouped gather/scatter, and paged KV cache layout
 - Direct-storage integrations and unbuffered platform-specific NVMe benchmarks
 - Real tokenizer artifact parsing/chat templates, dense/non-MoE layers, output
   bias, batched sessions, beam/speculative decoding, streaming, and serving

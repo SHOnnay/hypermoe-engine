@@ -69,11 +69,14 @@ public:
     [[nodiscard]] std::size_t layerCount() const noexcept override { return 2; }
     [[nodiscard]] std::size_t keyValueHeads() const noexcept override { return 1; }
     [[nodiscard]] std::size_t headDimension() const noexcept override { return 2; }
+    [[nodiscard]] hypermoe::tensor::Device device() const noexcept override {
+        return hypermoe::tensor::Device::cpu();
+    }
 
     [[nodiscard]] hypermoe::runtime::generation::ForwardPass forward(
         hypermoe::runtime::InferenceContext& context,
         std::span<const std::uint32_t> tokenIds,
-        hypermoe::runtime::cache::KVCache& cache) override {
+        hypermoe::runtime::cache::KVCacheBase& cache) override {
         if (tokenIds.empty() || context.batchSize != tokenIds.size() ||
             context.hiddenDimension != hiddenDimension()) {
             throw std::invalid_argument("fixture forward context is incompatible");
