@@ -28,6 +28,7 @@ struct BackendStats {
     std::uint64_t peakAllocatedBytes{};
     std::uint64_t hostToDeviceBytes{};
     std::uint64_t deviceToHostBytes{};
+    std::uint64_t synchronizationCount{};
     std::chrono::nanoseconds transferTime{};
 };
 

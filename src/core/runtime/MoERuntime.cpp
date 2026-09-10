@@ -3,6 +3,7 @@
 #include "experts/ExpertExecutor.hpp"
 #include "hypermoe/experts/expert_manager.hpp"
 #include "tensor/backend/CpuTensorBackend.hpp"
+#include "tensor/backend/CudaTensorBackend.hpp"
 #include "tensor/backend/TensorBackend.hpp"
 #include "tensor/precision/DTypeConverter.hpp"
 
@@ -164,14 +165,25 @@ BatchLayerExecutionResult MoERuntime::executeBatch(
     const auto inputWidth = hiddenStates.shape().dimensions()[1];
     const auto outputWidth = downShape[1];
     const tensor::Shape outputShape{tokenCount, outputWidth};
+    auto output = tensorBackend_->allocateTensor(outputShape, tensor::DType::FP32);
+    auto* cuda = dynamic_cast<tensor::CudaTensorBackend*>(tensorBackend_.get());
+    const auto nativeCuda = cuda && cuda->nativeKernelsAvailable();
     tensor::CpuTensorBackend cpu;
-    auto hostHidden = cpu.allocateTensor(hiddenStates.shape(), tensor::DType::FP32);
-    tensorBackend_->copyTensor(hiddenStates, hostHidden);
-    auto hostCombined = cpu.allocateTensor(outputShape, tensor::DType::FP32);
-    std::fill_n(static_cast<float*>(hostCombined.data()),
-                hostCombined.shape().elementCount(), 0.0F);
-    const auto* hiddenValues = static_cast<const float*>(hostHidden.data());
-    auto* combinedValues = static_cast<float*>(hostCombined.data());
+    tensor::Tensor hostHidden;
+    tensor::Tensor hostCombined;
+    const float* hiddenValues{};
+    float* combinedValues{};
+    if (nativeCuda) {
+        cuda->zero(output.view());
+    } else {
+        hostHidden = cpu.allocateTensor(hiddenStates.shape(), tensor::DType::FP32);
+        tensorBackend_->copyTensor(hiddenStates, hostHidden.view());
+        hostCombined = cpu.allocateTensor(outputShape, tensor::DType::FP32);
+        std::fill_n(static_cast<float*>(hostCombined.data()),
+                    hostCombined.shape().elementCount(), 0.0F);
+        hiddenValues = static_cast<const float*>(hostHidden.data());
+        combinedValues = static_cast<float*>(hostCombined.data());
+    }
     std::vector<tensor::Tensor> expertOutputs;
     expertOutputs.reserve(batches.size());
 
@@ -205,35 +217,49 @@ BatchLayerExecutionResult MoERuntime::executeBatch(
                 prepare(weights.upProjection, converted[1]);
             executionWeights.downProjection =
                 prepare(weights.downProjection, converted[2]);
-            auto hostExpertInput = cpu.allocateTensor(
-                {batch.size(), inputWidth}, tensor::DType::FP32);
-            auto* groupInput = static_cast<float*>(hostExpertInput.data());
-            for (std::size_t row = 0; row < batch.size(); ++row) {
-                std::memcpy(groupInput + row * inputWidth,
-                            hiddenValues + batch.tokenIndices[row] * inputWidth,
-                            inputWidth * sizeof(float));
+            tensor::Tensor expertInput;
+            if (nativeCuda) {
+                expertInput = tensorBackend_->allocateTensor(
+                    {batch.size(), inputWidth}, tensor::DType::FP32);
+                cuda->gatherRows(hiddenStates, batch.tokenIndices,
+                                 expertInput.view());
+            } else {
+                auto hostExpertInput = cpu.allocateTensor(
+                    {batch.size(), inputWidth}, tensor::DType::FP32);
+                auto* groupInput = static_cast<float*>(hostExpertInput.data());
+                for (std::size_t row = 0; row < batch.size(); ++row) {
+                    std::memcpy(groupInput + row * inputWidth,
+                                hiddenValues + batch.tokenIndices[row] * inputWidth,
+                                inputWidth * sizeof(float));
+                }
+                expertInput = tensorBackend_->allocateTensor(
+                    hostExpertInput.shape(), tensor::DType::FP32);
+                tensorBackend_->copyTensor(hostExpertInput.view(), expertInput.view());
             }
-            auto expertInput = tensorBackend_->allocateTensor(
-                hostExpertInput.shape(), tensor::DType::FP32);
-            tensorBackend_->copyTensor(hostExpertInput, expertInput);
             auto expertOutput = tensorBackend_->allocateTensor(
                 {batch.size(), outputWidth}, tensor::DType::FP32);
-            executor_->execute(expertInput, executionWeights, expertOutput);
+            executor_->execute(expertInput.view(), executionWeights,
+                               expertOutput.view());
             metadata.expertExecutionTime +=
                 std::chrono::steady_clock::now() - expertStart;
 
             const auto combinationStart = std::chrono::steady_clock::now();
-            auto hostExpertOutput = cpu.allocateTensor(
-                expertOutput.shape(), tensor::DType::FP32);
-            tensorBackend_->copyTensor(expertOutput, hostExpertOutput);
-            const auto* expertValues =
-                static_cast<const float*>(hostExpertOutput.data());
-            for (std::size_t row = 0; row < batch.size(); ++row) {
-                const auto token = batch.tokenIndices[row];
-                const auto weight = batch.routingWeights[row];
-                for (std::size_t hidden = 0; hidden < outputWidth; ++hidden) {
-                    combinedValues[token * outputWidth + hidden] +=
-                        weight * expertValues[row * outputWidth + hidden];
+            if (nativeCuda) {
+                cuda->scatterAddRows(expertOutput.view(), batch.tokenIndices,
+                                     batch.routingWeights, output.view());
+            } else {
+                auto hostExpertOutput = cpu.allocateTensor(
+                    expertOutput.shape(), tensor::DType::FP32);
+                tensorBackend_->copyTensor(expertOutput.view(), hostExpertOutput.view());
+                const auto* expertValues =
+                    static_cast<const float*>(hostExpertOutput.data());
+                for (std::size_t row = 0; row < batch.size(); ++row) {
+                    const auto token = batch.tokenIndices[row];
+                    const auto weight = batch.routingWeights[row];
+                    for (std::size_t hidden = 0; hidden < outputWidth; ++hidden) {
+                        combinedValues[token * outputWidth + hidden] +=
+                            weight * expertValues[row * outputWidth + hidden];
+                    }
                 }
             }
             metadata.expertCombinationTime +=
@@ -246,8 +272,9 @@ BatchLayerExecutionResult MoERuntime::executeBatch(
         }
     }
     const auto outputCopyStart = std::chrono::steady_clock::now();
-    auto output = tensorBackend_->allocateTensor(outputShape, tensor::DType::FP32);
-    tensorBackend_->copyTensor(hostCombined, output);
+    if (!nativeCuda) {
+        tensorBackend_->copyTensor(hostCombined.view(), output.view());
+    }
     tensorBackend_->synchronize();
     metadata.expertCombinationTime +=
         std::chrono::steady_clock::now() - outputCopyStart;

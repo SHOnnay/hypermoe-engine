@@ -69,7 +69,10 @@ void CpuBackend::copyFromDevice(void* destination,
     copy(destination, source, sizeBytes, false);
 }
 
-void CpuBackend::synchronize(StreamHandle) {}
+void CpuBackend::synchronize(StreamHandle) {
+    std::scoped_lock lock(mutex_);
+    ++stats_.synchronizationCount;
+}
 
 MemoryInfo CpuBackend::getMemoryInfo() const {
     std::scoped_lock lock(mutex_);

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(HyperMoE VERSION 0.17.0 LANGUAGES CXX)
+project(HyperMoE VERSION 0.19.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -38,14 +38,24 @@ message(STATUS "HyperMoE compiler: ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER
 
 find_package(Threads REQUIRED)
 set(HYPERMOE_CUDA_ENABLED OFF)
+set(HYPERMOE_CUDA_KERNELS_ENABLED OFF)
 if(HYPERMOE_ENABLE_CUDA)
     find_package(CUDAToolkit QUIET)
     if(CUDAToolkit_FOUND)
         set(HYPERMOE_CUDA_ENABLED ON)
         message(STATUS
             "HyperMoE CUDA: toolkit ${CUDAToolkit_VERSION}; runtime API and cuBLAS enabled")
-        message(STATUS
-            "HyperMoE CUDA: no CUDA compiler or custom kernels are required")
+        include(CheckLanguage)
+        check_language(CUDA)
+        if(CMAKE_CUDA_COMPILER)
+            enable_language(CUDA)
+            set(HYPERMOE_CUDA_KERNELS_ENABLED ON)
+            message(STATUS
+                "HyperMoE CUDA kernels: compiler ${CMAKE_CUDA_COMPILER_VERSION} enabled")
+        else()
+            message(STATUS
+                "HyperMoE CUDA kernels: compiler not found; cuBLAS/staged fallback enabled")
+        endif()
     else()
         message(STATUS
             "HyperMoE CUDA: requested, but CUDAToolkit was not found; CPU fallback enabled")
@@ -55,30 +65,38 @@ else()
 endif()
 
 if(MSVC)
-    add_compile_options(/W4 /permissive- /EHsc /Zc:__cplusplus)
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/W4>
+                        $<$<COMPILE_LANGUAGE:CXX>:/permissive->
+                        $<$<COMPILE_LANGUAGE:CXX>:/EHsc>
+                        $<$<COMPILE_LANGUAGE:CXX>:/Zc:__cplusplus>)
     # Generate PDBs in every configuration so crash dumps stay debuggable.
-    add_compile_options(/Zi)
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/Zi>)
     add_link_options($<$<CONFIG:Debug>:/DEBUG>)
     # Stack-frame and uninitialized-variable runtime checks in Debug builds.
-    add_compile_options($<$<CONFIG:Debug>:/RTC1>)
+    add_compile_options($<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:Debug>>:/RTC1>)
     if(HYPERMOE_WARNINGS_AS_ERRORS)
-        add_compile_options(/WX)
+        add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/WX>)
     endif()
 else()
-    add_compile_options(-Wall -Wextra -Wpedantic -Wconversion)
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wall>
+                        $<$<COMPILE_LANGUAGE:CXX>:-Wextra>
+                        $<$<COMPILE_LANGUAGE:CXX>:-Wpedantic>
+                        $<$<COMPILE_LANGUAGE:CXX>:-Wconversion>)
     if(HYPERMOE_WARNINGS_AS_ERRORS)
-        add_compile_options(-Werror)
+        add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Werror>)
     endif()
 endif()
 
 if(HYPERMOE_ENABLE_SANITIZERS)
     if(MSVC)
-        add_compile_options(/fsanitize=address /Zi)
+        add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/fsanitize=address>
+                            $<$<COMPILE_LANGUAGE:CXX>:/Zi>)
         add_link_options(/INCREMENTAL:NO)
         message(STATUS
             "HyperMoE sanitizers: MSVC AddressSanitizer enabled; UBSan is unavailable on MSVC")
     elseif(CMAKE_CXX_COMPILER_ID MATCHES "AppleClang|Clang|GNU")
-        add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
+        add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fsanitize=address,undefined>
+                            $<$<COMPILE_LANGUAGE:CXX>:-fno-omit-frame-pointer>)
         add_link_options(-fsanitize=address,undefined)
         message(STATUS "HyperMoE sanitizers: AddressSanitizer and UBSan enabled")
     else()
@@ -171,6 +189,7 @@ add_library(hypermoe
     tools/model_convert/WeightConverter.cpp
     tools/model_convert/ExpertPacker.cpp
     src/validation/CorrectnessOracle.cpp
+    src/validation/RealModelValidation.cpp
 )
 add_library(HyperMoE::hypermoe ALIAS hypermoe)
 
@@ -189,6 +208,15 @@ if(HYPERMOE_CUDA_ENABLED)
         HYPERMOE_HAS_CUDA=1
         HYPERMOE_HAS_CUBLAS=1)
     target_link_libraries(hypermoe PUBLIC CUDA::cudart CUDA::cublas)
+endif()
+
+if(HYPERMOE_CUDA_KERNELS_ENABLED)
+    target_sources(hypermoe PRIVATE src/backend/cuda/CudaKernels.cu)
+    target_compile_definitions(hypermoe PRIVATE HYPERMOE_HAS_CUDA_KERNELS=1)
+    set_target_properties(hypermoe PROPERTIES
+        CUDA_STANDARD 20
+        CUDA_STANDARD_REQUIRED ON
+        CUDA_EXTENSIONS OFF)
 endif()
 
 if(HYPERMOE_BUILD_TESTS)
@@ -268,6 +296,10 @@ if(HYPERMOE_BUILD_TESTS)
     add_executable(hypermoe_phase17_tests tests/phase17_tests.cpp)
     target_link_libraries(hypermoe_phase17_tests PRIVATE HyperMoE::hypermoe)
     add_test(NAME hypermoe_phase17 COMMAND hypermoe_phase17_tests)
+
+    add_executable(hypermoe_phase18_19_tests tests/phase18_19_tests.cpp)
+    target_link_libraries(hypermoe_phase18_19_tests PRIVATE HyperMoE::hypermoe)
+    add_test(NAME hypermoe_phase18_19 COMMAND hypermoe_phase18_19_tests)
 endif()
 
 if(HYPERMOE_BUILD_BENCHMARKS)
@@ -336,6 +368,10 @@ if(HYPERMOE_BUILD_BENCHMARKS)
     add_executable(hypermoe_gpu_inference_benchmark
         benchmarks/gpu_inference/gpu_inference_benchmark.cpp)
     target_link_libraries(hypermoe_gpu_inference_benchmark PRIVATE HyperMoE::hypermoe)
+
+    add_executable(hypermoe_real_model_benchmark
+        benchmarks/real_model/real_model_benchmark.cpp)
+    target_link_libraries(hypermoe_real_model_benchmark PRIVATE HyperMoE::hypermoe)
 
     add_executable(hypermoe_model_inspect
         tools/model_inspect/model_inspect.cpp)

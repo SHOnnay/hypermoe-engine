@@ -229,6 +229,10 @@ void CudaBackend::synchronize(StreamHandle stream) {
         checkCuda(cudaStreamSynchronize(streamFrom(stream)), "cudaStreamSynchronize");
         collectTimings(*impl_, streamFrom(stream), false);
     }
+    {
+        std::scoped_lock lock(impl_->mutex);
+        ++impl_->statistics.synchronizationCount;
+    }
 #else
     (void)stream;
     throw std::runtime_error("CUDA support is unavailable");

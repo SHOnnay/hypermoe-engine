@@ -3,7 +3,7 @@
 #include "tensor/backend/CpuTensorBackend.hpp"
 #include "tensor/backend/TensorBackend.hpp"
 
-#include <cstring>
+#include <algorithm>
 #include <limits>
 #include <stdexcept>
 #include <utility>
@@ -33,16 +33,43 @@ void CudaKVCache::append(std::size_t layer, std::uint64_t first,
         throw std::invalid_argument("CUDA KV cache append metadata is incompatible");
     }
     std::scoped_lock lock(mutex_);
-    std::size_t tokens{};
-    for (const auto& chunk : layers_[layer]) tokens += chunk.keys.shape().dimensions()[0];
-    if (first != tokens || keys.shape().dimensions()[0] > maximumSequenceLength_ - tokens) {
+    auto& storage = layers_[layer];
+    const auto incoming = keys.shape().dimensions()[0];
+    if (first != storage.tokens || incoming > maximumSequenceLength_ - storage.tokens) {
         throw std::invalid_argument("CUDA KV cache append exceeds contiguous capacity");
     }
-    auto ownedKeys = backend_->allocateTensor(keys.shape(), tensor::DType::FP32);
-    auto ownedValues = backend_->allocateTensor(values.shape(), tensor::DType::FP32);
-    backend_->copyTensor(keys, ownedKeys);
-    backend_->copyTensor(values, ownedValues);
-    layers_[layer].push_back({first, std::move(ownedKeys), std::move(ownedValues)});
+    const auto required = storage.tokens + incoming;
+    if (storage.capacity < required) {
+        auto capacity = std::max<std::size_t>(1, storage.capacity);
+        while (capacity < required) {
+            capacity = capacity > maximumSequenceLength_ / 2U
+                ? maximumSequenceLength_ : capacity * 2U;
+        }
+        auto expandedKeys = backend_->allocateTensor(
+            {capacity, keyValueHeads_, headDimension_}, tensor::DType::FP32);
+        auto expandedValues = backend_->allocateTensor(
+            expandedKeys.shape(), tensor::DType::FP32);
+        if (storage.tokens != 0) {
+            const tensor::Shape logical{
+                storage.tokens, keyValueHeads_, headDimension_};
+            backend_->copyTensor(
+                storage.keys.view().sliceBytes(0, logical, tensor::DType::FP32),
+                expandedKeys.view().sliceBytes(0, logical, tensor::DType::FP32));
+            backend_->copyTensor(
+                storage.values.view().sliceBytes(0, logical, tensor::DType::FP32),
+                expandedValues.view().sliceBytes(0, logical, tensor::DType::FP32));
+        }
+        storage.keys = std::move(expandedKeys);
+        storage.values = std::move(expandedValues);
+        storage.capacity = capacity;
+    }
+    const auto offset = storage.tokens * keyValueHeads_ * headDimension_ * sizeof(float);
+    backend_->copyTensor(
+        keys, storage.keys.view().sliceBytes(offset, keys.shape(), tensor::DType::FP32));
+    backend_->copyTensor(
+        values, storage.values.view().sliceBytes(offset, values.shape(), tensor::DType::FP32));
+    if (storage.tokens == 0) storage.firstPosition = first;
+    storage.tokens = required;
 }
 
 KVCacheSnapshot CudaKVCache::snapshot(std::size_t layer) const {
@@ -51,21 +78,43 @@ KVCacheSnapshot CudaKVCache::snapshot(std::size_t layer) const {
     KVCacheSnapshot result;
     result.keyValueHeads = keyValueHeads_;
     result.headDimension = headDimension_;
+    const auto& storage = layers_[layer];
+    if (storage.tokens == 0) return result;
+    const tensor::Shape logical{storage.tokens, keyValueHeads_, headDimension_};
     tensor::CpuTensorBackend cpu;
-    for (const auto& chunk : layers_[layer]) {
-        auto hostKeys = cpu.allocateTensor(chunk.keys.shape(), tensor::DType::FP32);
-        auto hostValues = cpu.allocateTensor(chunk.values.shape(), tensor::DType::FP32);
-        backend_->copyTensor(chunk.keys.view(), hostKeys.view());
-        backend_->copyTensor(chunk.values.view(), hostValues.view());
-        const auto count = chunk.keys.shape().dimensions()[0];
-        for (std::size_t token = 0; token < count; ++token) {
-            result.positions.push_back(chunk.firstPosition + token);
-        }
-        const auto* keys = static_cast<const float*>(hostKeys.data());
-        const auto* values = static_cast<const float*>(hostValues.data());
-        result.keys.insert(result.keys.end(), keys, keys + hostKeys.shape().elementCount());
-        result.values.insert(result.values.end(), values, values + hostValues.shape().elementCount());
+    auto hostKeys = cpu.allocateTensor(logical, tensor::DType::FP32);
+    auto hostValues = cpu.allocateTensor(logical, tensor::DType::FP32);
+    backend_->copyTensor(
+        storage.keys.view().sliceBytes(0, logical, tensor::DType::FP32),
+        hostKeys.view());
+    backend_->copyTensor(
+        storage.values.view().sliceBytes(0, logical, tensor::DType::FP32),
+        hostValues.view());
+    for (std::size_t token = 0; token < storage.tokens; ++token) {
+        result.positions.push_back(storage.firstPosition + token);
     }
+    const auto* keys = static_cast<const float*>(hostKeys.data());
+    const auto* values = static_cast<const float*>(hostValues.data());
+    result.keys.assign(keys, keys + hostKeys.shape().elementCount());
+    result.values.assign(values, values + hostValues.shape().elementCount());
+    return result;
+}
+
+CudaKVDeviceSnapshot CudaKVCache::deviceSnapshot(std::size_t layer) const {
+    std::scoped_lock lock(mutex_);
+    if (layer >= layers_.size()) {
+        throw std::out_of_range("CUDA KV cache layer is invalid");
+    }
+    const auto& storage = layers_[layer];
+    if (storage.tokens == 0) {
+        throw std::logic_error("CUDA KV cache layer has no device snapshot");
+    }
+    const tensor::Shape logical{storage.tokens, keyValueHeads_, headDimension_};
+    CudaKVDeviceSnapshot result;
+    result.keys = storage.keys.view().sliceBytes(0, logical, tensor::DType::FP32);
+    result.values = storage.values.view().sliceBytes(0, logical, tensor::DType::FP32);
+    result.tokenCount = storage.tokens;
+    result.firstPosition = storage.firstPosition;
     return result;
 }
 
@@ -74,24 +123,19 @@ std::size_t CudaKVCache::tokenCount(std::size_t layer) const {
     if (layer >= layers_.size()) {
         throw std::out_of_range("CUDA KV cache layer is invalid");
     }
-    std::size_t tokens{};
-    for (const auto& chunk : layers_[layer]) {
-        tokens += chunk.keys.shape().dimensions()[0];
-    }
-    return tokens;
+    return layers_[layer].tokens;
 }
 std::size_t CudaKVCache::memoryUsageBytes() const {
     std::scoped_lock lock(mutex_);
     std::size_t bytes{};
     for (const auto& layer : layers_) {
-        for (const auto& chunk : layer) {
-            const auto chunkBytes = chunk.keys.bytes() + chunk.values.bytes() +
-                chunk.keys.shape().dimensions()[0] * sizeof(std::uint64_t);
-            if (bytes > std::numeric_limits<std::size_t>::max() - chunkBytes) {
-                throw std::overflow_error("CUDA KV cache byte accounting overflows");
-            }
-            bytes += chunkBytes;
+        const auto layerBytes = (layer.keys ? layer.keys.bytes() : 0) +
+            (layer.values ? layer.values.bytes() : 0) +
+            layer.tokens * sizeof(std::uint64_t);
+        if (bytes > std::numeric_limits<std::size_t>::max() - layerBytes) {
+            throw std::overflow_error("CUDA KV cache byte accounting overflows");
         }
+        bytes += layerBytes;
     }
     return bytes;
 }
@@ -104,11 +148,11 @@ void CudaKVCache::clear(std::size_t layer) {
     if (layer >= layers_.size()) {
         throw std::out_of_range("CUDA KV cache layer is invalid");
     }
-    layers_[layer].clear();
+    layers_[layer] = {};
 }
 void CudaKVCache::reset() {
     std::scoped_lock lock(mutex_);
-    for (auto& layer : layers_) layer.clear();
+    for (auto& layer : layers_) layer = {};
 }
 std::size_t CudaKVCache::layerCount() const noexcept { return layers_.size(); }
 std::size_t CudaKVCache::maximumSequenceLength() const noexcept { return maximumSequenceLength_; }

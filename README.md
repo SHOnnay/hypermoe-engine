@@ -1,13 +1,14 @@
 # HyperMoE Engine
 
 HyperMoE is a C++20 inference-runtime project for hierarchical Mixture-of-Experts
-memory management across VRAM, pinned RAM, ordinary RAM, and NVMe. Phase 17
-connects the existing model and generation abstractions to CUDA tensor ownership:
-cuBLAS executes FP32 GEMM, expert projections, residual addition, elementwise
-multiplication, and attention projections; CUDA KV caches retain keys and values
-in VRAM. CPU remains a complete fallback. Reference activation, RMSNorm, routing,
-RoPE, softmax, and grouped expert gather/scatter use explicit host staging on the
-CUDA path until dedicated kernels are validated. There is no server or chat API.
+memory management across VRAM, pinned RAM, ordinary RAM, and NVMe. Phases 18 and
+19 extend the optional CUDA path with device-resident activation, RMSNorm, RoPE,
+router softmax/top-k, causal attention, and grouped expert gather/scatter. cuBLAS
+continues to provide FP32 GEMM, while correctness-first CUDA kernels remove the
+largest reference-path staging boundaries. CPU remains a complete fallback.
+Real Qwen-compatible artifacts can be imported, validated, packed, and prepared
+for traced CPU/CUDA comparison; no checkpoint or RTX benchmark is bundled or
+fabricated. There is no server or chat API.
 
 Phase 14.5 hardens the same runtime contracts across 64-bit little-endian
 Windows, Linux, and macOS targets. It adds explicit wire-enum values, alignment
@@ -50,6 +51,8 @@ ctest --test-dir build --output-on-failure
 ./build/hypermoe_transformer_benchmark transformer_report.json
 ./build/hypermoe_model_runtime_benchmark model_runtime_report.json
 ./build/hypermoe_forward_benchmark forward_report.json
+./build/hypermoe_real_model_benchmark /path/to/qwen-checkpoint \
+  /path/to/packed-output real_model_report.json
 ```
 
 Enable runtime memory checks with:
@@ -61,8 +64,11 @@ cmake --build build-sanitize --parallel
 ctest --test-dir build-sanitize --output-on-failure
 ```
 
-CUDA is detected with CMake's `CUDAToolkit` package. When it is absent, every
-runtime target still builds and uses `CpuBackend`. To force a CPU-only build:
+CUDA runtime/cuBLAS support is detected with CMake's `CUDAToolkit` package;
+native Phase 18 kernels are enabled only when a CUDA language compiler is also
+available. A toolkit-only configuration retains the Phase 17 staged CUDA path.
+When CUDA is absent, every target still builds and uses `CpuBackend`. To force a
+CPU-only build:
 
 ```sh
 cmake -S . -B build-cpu -DHYPERMOE_ENABLE_CUDA=OFF
@@ -95,6 +101,9 @@ See [incremental generation](docs/components/generation.md), the
 [KV cache runtime](docs/components/kv-cache-runtime.md). See
 [CUDA inference](docs/components/cuda-inference.md) for the current accelerated
 operations, staged correctness paths, backend selection, and validation rules.
+The [GPU dataflow](docs/components/gpu-dataflow.md) and
+[real-model validation](docs/components/real-model-validation.md) documents
+describe the Phase 18/19 execution and artifact-validation boundaries.
 
 The Phase 1 simulator accepts `--requests`, `--seed`, `--vram-mib`, and
 `--ram-mib`. The Phase 2 simulator accepts `--tokens`, `--seed`, `--read-mode`
@@ -207,9 +216,9 @@ yet dequantize or execute quantized GEMM.
 
 `ExpertMlpExecutor` performs the common gated primitive
 `down(activation(input × gate) * (input × up))`. CPU SiLU and exact GELU are the
-reference implementations. CUDA uses existing cuBLAS GEMM and an explicit
-host-staged activation/elementwise fallback until profiling supports custom fused
-kernels. No routing, transformer block, or model-format assumption is included.
+reference implementations. CUDA uses cuBLAS GEMM and, with native-kernel support,
+device activation and grouped gather/scatter; toolkit-only builds retain the
+explicit staged fallback. No model-format assumption is included.
 
 The tensor benchmark reports CPU/CUDA FP32 GEMM, tensor allocation, copy, and
 synchronization measurements. CUDA fields remain zero with an explicit skip
@@ -316,7 +325,7 @@ lease prevents eviction until device synchronization completes.
 
 FP16/BF16 CUDA storage currently uses an explicit selected-tensor conversion to
 the FP32 correctness baseline. Native low-precision GEMM, quantized kernels, and
-CUDA elementwise kernels remain deferred. See [CUDA runtime](docs/components/cuda-runtime.md),
+fused expert kernels remain deferred. See [CUDA runtime](docs/components/cuda-runtime.md),
 [GPU execution](docs/components/gpu-execution.md), and
 [hardware validation](docs/components/hardware-validation.md).
 

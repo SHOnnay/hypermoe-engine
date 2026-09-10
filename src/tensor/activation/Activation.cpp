@@ -2,6 +2,7 @@
 
 #include "profiling/Profiler.hpp"
 #include "tensor/backend/CpuTensorBackend.hpp"
+#include "tensor/backend/CudaTensorBackend.hpp"
 #include "tensor/backend/TensorBackend.hpp"
 
 #include <chrono>
@@ -63,6 +64,17 @@ void apply(ActivationType type,
     if (backend.device().type == DeviceType::CPU) {
         applyCpu(type, input, output);
     } else {
+        if (auto* cuda = dynamic_cast<CudaTensorBackend*>(&backend);
+            cuda && cuda->nativeKernelsAvailable()) {
+            cuda->applyActivation(type == ActivationType::SiLU ? 0 : 1,
+                                  input, output);
+            if (profiler) {
+                backend.synchronize();
+                profiler->recordActivationTime(
+                    std::chrono::steady_clock::now() - start);
+            }
+            return;
+        }
         CpuTensorBackend cpu;
         auto hostInput = cpu.allocateTensor(input.shape(), input.dtype());
         auto hostOutput = cpu.allocateTensor(output.shape(), output.dtype());

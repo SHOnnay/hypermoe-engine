@@ -1,4 +1,4 @@
-# HyperMoE architecture through Phase 14
+# HyperMoE architecture through Phase 19
 
 The runtime separates durable storage, movement, residency, eviction policy,
 hardware access, and measurement so future model adapters do not own memory
@@ -188,6 +188,46 @@ last logits -> LogitsProcessor -> Sampler -> Decoder::decode -> generated IDs
                                                        Tokenizer::decode
 ```
 
+Phases 17 and 18 select a backend without changing model-facing contracts, then
+keep the latency-critical sparse path resident on the selected device:
+
+```text
+hidden states (CUDA)
+   |-- cuBLAS router logits -> CUDA softmax/top-k
+   |                              |
+   |                              v
+   |                  CUDA grouped gather by expert
+   |                              |
+   |                    cuBLAS expert projections
+   |                              |
+   |                  CUDA activation + scatter-add
+   |
+   `-- cuBLAS Q/K/V -> CUDA RoPE -> contiguous CUDA KV cache
+                                      |
+                             causal score/mask/softmax/context
+                                      |
+                                cuBLAS output projection
+```
+
+The CMake CUDA capability boundary is two-stage: toolkit/runtime and cuBLAS can
+be present without a usable CUDA compiler. In that configuration the Phase 17
+staged path is retained; native kernels are compiled only when both capabilities
+are available. CPU-only builds do not include CUDA headers or sources.
+
+Phase 19 adds an artifact-validation boundary before performance claims:
+
+```text
+Qwen-compatible artifact -> QwenImporter -> CheckpointValidator
+                                      | exact physical/logical agreement
+                                      v
+                                ExpertPacker
+                                      |
+                         packed runtime manifest/store
+                                      |
+               CPU trace <---- CorrectnessOracle ----> CUDA trace
+                 logits + per-layer + per-expert intermediate tensors
+```
+
 ## Components
 
 - `ExpertIndex` parses a versioned, fixed-width little-endian format and builds
@@ -218,6 +258,15 @@ last logits -> LogitsProcessor -> Sampler -> Decoder::decode -> generated IDs
 - `ComputeBackend` is the capability boundary. `CpuBackend` is always usable;
   `CudaBackend` is compiled only when CUDAToolkit is detected and also checks for
   a runtime device.
+- `CudaTensorBackend` dispatches cuBLAS GEMMs and, when a CUDA compiler was
+  detected, correctness-first kernels for activation, RMSNorm, RoPE, router
+  selection, causal attention, and grouped expert gather/scatter.
+- `CudaKVCache` grows geometrically as contiguous device storage. Attention can
+  consume a logical device view directly; host snapshots remain available only
+  for explicit oracle and fallback boundaries.
+- `RealModelValidator` composes importer, source-checkpoint validation, expert
+  packing, runtime-manifest validation, and deterministic CPU/CUDA trace
+  comparison without embedding Qwen tensor names in the runtime.
 - `CudaRuntime` initializes a selected device, reports compute capability and
   live VRAM information, owns created streams/events, and shuts them down after
   synchronization. With CUDA disabled it remains queryable and reports
@@ -259,8 +308,8 @@ last logits -> LogitsProcessor -> Sampler -> Decoder::decode -> generated IDs
 - `MatmulExpertExecutor` retains the Phase 5 single-projection API.
   `ExpertMlpExecutor` composes gate/up/down FP32 projections, SiLU or exact GELU,
   and gated elementwise multiplication without embedding router or transformer
-  behavior. CUDA projection uses cuBLAS; activation and multiply currently use
-  explicit host staging.
+  behavior. CUDA projection uses cuBLAS; native-kernel builds keep activation,
+  grouped gather, and scatter-add on device.
 - `ModelAdapter` converts format-specific metadata into neutral tensors, layers,
   router configuration, capabilities, and generic expert mappings. Runtime code
   never parses a tensor name or switches on `ModelArchitecture`.
@@ -368,16 +417,18 @@ last logits -> LogitsProcessor -> Sampler -> Decoder::decode -> generated IDs
   probability policy, and decode control outside transformer execution.
 - `CudaTensorBackend` keeps FP32 GEMM and device copies on CUDA and now implements
   residual addition with cuBLAS AXPY plus elementwise multiplication with cuBLAS
-  diagonal scaling. The CPU backend remains the numerical reference.
+  diagonal scaling. Optional kernels add activation, RMSNorm, RoPE, top-k,
+  causal attention, and sparse gather/scatter. The CPU backend remains the
+  numerical reference.
 - `CudaAttention` executes QKV and output projections through the CUDA tensor
-  backend. Its RoPE, causal score, softmax, and context stages deliberately use
-  the CPU reference path, then return device-resident tensors.
-- `CudaRouterBackend`, CUDA-capable `Embedding`, and `LMHead` provide checked
-  host-staged fallbacks for operations without a validated kernel. RMSNorm uses
-  cuBLAS norm, diagonal scaling, and vector scaling directly on device.
+  backend. Native builds also execute RoPE, causal score/mask, stable softmax,
+  and context accumulation in CUDA; toolkit-only builds use the reference seam.
+- `CudaRouterBackend` keeps logits, normalization, and top-k selection on-device
+  when native kernels are available. CUDA-capable `Embedding` and `LMHead`
+  retain checked host-staged fallbacks.
 - `KVCacheBase` separates the sequence contract from storage. `KVCache` owns host
-  arrays and `CudaKVCache` owns per-append device tensors; `KVCacheManager`
-  selects the implementation from its configured tensor backend.
+  arrays and `CudaKVCache` owns geometrically growing contiguous device tensors;
+  `KVCacheManager` selects the implementation from its configured tensor backend.
 - `InferenceConfig` binds a session to an explicit device. The model, cache
   manager, and requested device must agree before cache allocation or execution.
 - Generation materializes only the logits needed by the sampler through the

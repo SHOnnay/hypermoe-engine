@@ -622,18 +622,15 @@ to a unit interval and walks the processed probability distribution. Identical
 seeds and logits therefore produce identical choices across supported standard
 libraries.
 
-## Why Phase 17 mixes cuBLAS execution with explicit reference staging
+## Why Phase 17 initially mixed cuBLAS execution with reference staging
 
-Correct GPU results are the first target, while custom kernels are intentionally
-deferred. FP32 matrix projections map directly to cuBLAS GEMM; vector addition
-maps to AXPY, and elementwise multiplication maps to diagonal scaling. Those
-operations stay in VRAM. RMSNorm is decomposed into cuBLAS norm, diagonal
-scaling, and vector scaling calls. RoPE, softmax/context accumulation, activation,
-routing, and grouped expert scatter currently cross an explicit host
-boundary and reuse the tested scalar implementation. The component still
-returns tensors on its selected device, so replacing one staged operation with
-a kernel does not alter model or generation APIs. Benchmark reports must expose
-this boundary rather than describing the entire transformer as GPU-native.
+Correct GPU results were the first target. FP32 matrix projections map directly
+to cuBLAS GEMM; vector addition maps to AXPY, and elementwise multiplication maps
+to diagonal scaling. Phase 17 deliberately staged RoPE, softmax/context,
+activation, routing, and grouped expert scatter through the tested scalar
+implementation. Phase 18 replaces those seams only when native kernels compile,
+without changing model or generation APIs; toolkit-only builds keep the staged
+baseline. Benchmark reports must identify which capability was active.
 
 ## Why KV cache storage has a polymorphic contract
 
@@ -642,9 +639,9 @@ particular allocation type. `KVCacheBase` retains that observable contract while
 the CPU cache owns vectors and `CudaKVCache` owns backend tensors. A manager is
 constructed with either no backend (CPU) or an available CUDA tensor backend;
 sessions reject any model/cache/device mismatch before allocating state. The
-initial CUDA snapshot performs a checked device-to-host copy for the reference
-softmax path. A future paged attention kernel can consume the same device chunks
-without changing session ownership.
+host snapshot remains available for explicit correctness inspection. Native
+attention consumes a logical device view of contiguous cache storage directly;
+a future paged layout can preserve the same session ownership contract.
 
 ## Why sampling materializes logits through GenerationModel
 
@@ -655,3 +652,29 @@ host-materialization boundary. CPU fixtures inherit the safe default copy;
 `ModelRuntimeGenerationModel` delegates to its configured tensor backend. This
 keeps backend selection explicit while avoiding undefined host dereferences of
 device pointers.
+
+## Why native CUDA kernels are an independent build capability
+
+Finding the CUDA runtime and cuBLAS does not prove that CMake can compile `.cu`
+sources. HyperMoE therefore reports toolkit support and native-kernel support
+separately. Toolkit-only builds preserve the already validated cuBLAS and staged
+reference implementation, while a detected CUDA compiler enables the Phase 18
+kernels. CPU builds remain free of CUDA language and header requirements.
+
+## Why the first GPU-resident kernels favor correctness
+
+Router top-k, causal attention, RMSNorm, and scatter-add initially use simple,
+deterministic kernels instead of claiming production throughput from an
+unmeasured fusion strategy. This removes repeated full-tensor host transfers and
+establishes CPU/CUDA oracle coverage. Warp-specialized reductions, fused grouped
+GEMM, paged attention, and precision-specific kernels require target-hardware
+profiles before replacing these implementations.
+
+## Why real-model validation records intermediate traces
+
+A final-logit comparison alone does not identify whether a mismatch originated
+in artifact mapping, routing, an expert projection, attention, or accumulation.
+The Phase 19 validator compares logits together with per-layer transformer and
+per-expert outputs. Artifact preparation first requires importer discovery,
+checkpoint validation, packing validation, and a complete runtime manifest, so
+execution cannot silently proceed from an incomplete or guessed tensor map.

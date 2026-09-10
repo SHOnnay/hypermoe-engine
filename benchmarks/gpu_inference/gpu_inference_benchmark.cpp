@@ -40,6 +40,7 @@ std::string number(const std::optional<double>& value) {
 struct Report {
     double cpuExpertMs{};
     bool cudaAvailable{};
+    bool nativeKernels{};
     std::string device;
     std::optional<double> initializationMs;
     std::optional<double> hostToDeviceMs;
@@ -48,12 +49,18 @@ struct Report {
     std::optional<double> transformerLayerMs;
     std::optional<double> tokensPerSecond;
     std::optional<double> allocatedMiB;
+    std::optional<double> measuredCudaTransferMs;
+    std::optional<double> deviceResidentComputeMs;
+    std::optional<double> gpuUtilizationPercent;
+    std::optional<std::size_t> synchronizationPoints;
 
     [[nodiscard]] std::string json() const {
         std::ostringstream output;
         output << "{\n"
-               << "  \"schema\": \"hypermoe.gpu-inference.v1\",\n"
+               << "  \"schema\": \"hypermoe.gpu-inference.v2\",\n"
                << "  \"cuda_available\": " << (cudaAvailable ? "true" : "false") << ",\n"
+               << "  \"native_cuda_kernels\": "
+               << (nativeKernels ? "true" : "false") << ",\n"
                << "  \"device\": \"" << device << "\",\n"
                << "  \"gpu_initialization_ms\": " << number(initializationMs) << ",\n"
                << "  \"h2d_transfer_ms\": " << number(hostToDeviceMs) << ",\n"
@@ -62,7 +69,16 @@ struct Report {
                << "  \"cuda_attention_ms\": " << number(cudaAttentionMs) << ",\n"
                << "  \"transformer_layer_ms\": " << number(transformerLayerMs) << ",\n"
                << "  \"tokens_per_second\": " << number(tokensPerSecond) << ",\n"
-               << "  \"vram_allocated_mib\": " << number(allocatedMiB) << "\n"
+               << "  \"vram_allocated_mib\": " << number(allocatedMiB) << ",\n"
+               << "  \"measured_cuda_transfer_ms\": "
+               << number(measuredCudaTransferMs) << ",\n"
+               << "  \"device_resident_compute_ms\": "
+               << number(deviceResidentComputeMs) << ",\n"
+               << "  \"gpu_utilization_percent\": "
+               << number(gpuUtilizationPercent) << ",\n"
+               << "  \"synchronization_points\": "
+               << (synchronizationPoints
+                       ? std::to_string(*synchronizationPoints) : "null") << "\n"
                << "}\n";
         return output.str();
     }
@@ -102,6 +118,7 @@ Report run() {
         return report;
     }
     report.cudaAvailable = true;
+    report.nativeKernels = cuda->nativeKernelsAvailable();
     report.initializationMs = milliseconds(initialization);
     auto raw = std::make_shared<backend::CudaBackend>();
     report.device = std::string(raw->name());
@@ -146,12 +163,18 @@ Report run() {
         deviceInput.view(),
         {identityDevice.view(), identityDevice.view(), identityDevice.view(),
          identityDevice.view()}, configuration);
+    cuda->synchronize();
     report.cudaAttentionMs = milliseconds(Clock::now() - start);
     report.transformerLayerMs = *report.cudaAttentionMs + *report.cudaExpertMs;
     report.tokensPerSecond = static_cast<double>(tokens) /
         (*report.transformerLayerMs / 1000.0);
-    report.allocatedMiB = static_cast<double>(raw->stats().allocatedBytes) /
+    const auto backendStats = cuda->backendStats();
+    report.allocatedMiB = static_cast<double>(backendStats.allocatedBytes) /
                           (1024.0 * 1024.0);
+    report.synchronizationPoints = static_cast<std::size_t>(
+        backendStats.synchronizationCount);
+    report.measuredCudaTransferMs = milliseconds(backendStats.transferTime);
+    report.deviceResidentComputeMs = *report.cudaExpertMs + *report.cudaAttentionMs;
     return report;
 }
 

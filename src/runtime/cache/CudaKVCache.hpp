@@ -9,6 +9,13 @@ namespace hypermoe::tensor { class TensorBackend; }
 
 namespace hypermoe::runtime::cache {
 
+struct CudaKVDeviceSnapshot {
+    tensor::TensorView keys;
+    tensor::TensorView values;
+    std::size_t tokenCount{};
+    std::uint64_t firstPosition{};
+};
+
 class CudaKVCache final : public KVCacheBase {
 public:
     CudaKVCache(std::shared_ptr<tensor::TensorBackend> backend,
@@ -17,6 +24,7 @@ public:
     void append(std::size_t layer, std::uint64_t firstPosition,
                 tensor::TensorView keys, tensor::TensorView values) override;
     [[nodiscard]] KVCacheSnapshot snapshot(std::size_t layer) const override;
+    [[nodiscard]] CudaKVDeviceSnapshot deviceSnapshot(std::size_t layer) const;
     [[nodiscard]] std::size_t tokenCount(std::size_t layer) const override;
     [[nodiscard]] std::size_t memoryUsageBytes() const override;
     [[nodiscard]] std::size_t maximumMemoryUsageBytes() const override;
@@ -28,13 +36,19 @@ public:
     [[nodiscard]] std::size_t headDimension() const noexcept override;
     [[nodiscard]] tensor::Device device() const noexcept override;
 private:
-    struct Chunk { std::uint64_t firstPosition{}; tensor::Tensor keys; tensor::Tensor values; };
+    struct LayerStorage {
+        tensor::Tensor keys;
+        tensor::Tensor values;
+        std::size_t tokens{};
+        std::size_t capacity{};
+        std::uint64_t firstPosition{};
+    };
     std::shared_ptr<tensor::TensorBackend> backend_;
     std::size_t maximumSequenceLength_{};
     std::size_t keyValueHeads_{};
     std::size_t headDimension_{};
     mutable std::mutex mutex_;
-    std::vector<std::vector<Chunk>> layers_;
+    std::vector<LayerStorage> layers_;
 };
 
 } // namespace hypermoe::runtime::cache

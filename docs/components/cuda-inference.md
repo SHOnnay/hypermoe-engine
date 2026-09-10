@@ -1,5 +1,9 @@
 # CUDA inference
 
+This document records the Phase 17 correctness baseline. Phase 18 replaces the
+largest staged operations when a CUDA compiler is available; see
+[GPU dataflow](gpu-dataflow.md) for the current path.
+
 Phase 17 connects HyperMoE's existing tensor, expert, transformer, cache, and
 generation interfaces to CUDA without removing their CPU implementations. CUDA
 remains optional: if CMake cannot find the CUDA Toolkit and cuBLAS, the same
