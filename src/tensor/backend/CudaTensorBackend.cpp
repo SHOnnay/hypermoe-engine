@@ -192,7 +192,8 @@ void CudaTensorBackend::copyTensor(TensorView source, TensorView destination) {
 #ifdef HYPERMOE_HAS_CUBLAS
             checkCuda(cudaSetDevice(impl_->ordinal), "cudaSetDevice");
             checkCuda(cudaMemcpyAsync(destination.mutableData(), source.data(), source.bytes(),
-                                      cudaMemcpyDeviceToDevice, stream),
+                                      cudaMemcpyDeviceToDevice,
+                                      static_cast<cudaStream_t>(stream)),
                       "cudaMemcpyAsync(device-to-device)");
 #else
             throw std::runtime_error("CUDA device copy support is unavailable");
