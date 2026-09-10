@@ -1,0 +1,21 @@
+{
+  "benchmark": "phase13_model_runtime",
+  "fixture": "reduced_cpu_two_layer_moe",
+  "iterations": 100,
+  "cpu": {
+    "average_layer_ms": 0.151118,
+    "attention_ms_per_layer": 0.028947,
+    "normalization_ms_per_layer": 0.003980,
+    "routing_ms_per_layer": 0.012608,
+    "expert_ms_per_layer": 0.065679,
+    "expert_combination_ms_per_layer": 0.008948,
+    "model_ms": 0.330525
+  },
+  "memory": {
+    "shared_tensor_bytes": 512,
+    "kv_cache_bytes": 384,
+    "logical_vram_bytes": 768,
+    "logical_ram_bytes": 0
+  },
+  "cuda": {"available":false,"executed":false,"reason":"CUDA model layers are not part of the CPU reference benchmark"}
+}

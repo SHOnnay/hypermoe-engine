@@ -207,21 +207,21 @@ void testCachePolicies() {
     hypermoe::LRUPolicy lru;
     for (const auto id : ids) lru.onResident(id, hypermoe::MemoryTier::Vram);
     lru.onAccess(1);
-    expect(victim(lru, ids) == 2, "LRU evicts the oldest resident");
+    expect(victim(lru, ids) == 2U, "LRU evicts the oldest resident");
 
     hypermoe::LFUPolicy lfu;
     for (const auto id : ids) lfu.onResident(id, hypermoe::MemoryTier::Vram);
     lfu.onAccess(1);
     lfu.onAccess(1);
     lfu.onAccess(2);
-    expect(victim(lfu, ids) == 3, "LFU evicts the least frequently used resident");
+    expect(victim(lfu, ids) == 3U, "LFU evicts the least frequently used resident");
 
     hypermoe::HybridPolicy hybrid;
     for (const auto id : ids) hybrid.onResident(id, hypermoe::MemoryTier::Vram);
     hybrid.onAccess(1);
     hybrid.setLayerProbability(2, 1.0);
     hybrid.setPrefetchConfidence(2, 1.0);
-    expect(victim(hybrid, ids) == 3, "hybrid score preserves predicted experts");
+    expect(victim(hybrid, ids) == 3U, "hybrid score preserves predicted experts");
     expect(hybrid.score(1) > hybrid.score(3), "hybrid frequency and recency affect score");
 }
 
