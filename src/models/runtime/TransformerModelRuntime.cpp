@@ -84,7 +84,7 @@ TransformerModelRuntime::TransformerModelRuntime(
         const auto* metadata = manifest.findTensor(name);
         const auto& value = tensors_.require(name);
         if (!metadata || value.shape() != metadata->shape ||
-            value.dtype() != metadata->dtype || value.dtype() != tensor::DType::FP32 ||
+            value.dtype() != tensor::DType::FP32 ||
             !backend_ || value.device() != backend_->device()) {
             throw std::invalid_argument(
                 "runtime tensor binding disagrees with manifest or backend");
@@ -108,13 +108,24 @@ TransformerModelRuntime::TransformerModelRuntime(
         attentionConfiguration.causal = true;
         attentionConfiguration.rotaryEmbedding = true;
         attentionConfiguration.ropeTheta = architecture_.ropeTheta;
+        attentionConfiguration.queryKeyNormEpsilon =
+            architecture_.inputNormalization.epsilon;
         attentionConfiguration.layerIndex = static_cast<std::uint32_t>(layerId);
         attentionConfiguration.kvCache = kvCache_.get();
+        if (mapping->queryNormTensor.empty() != mapping->keyNormTensor.empty()) {
+            throw std::invalid_argument(
+                "transformer layer must bind both query and key normalization weights");
+        }
+        const auto optional = [&](const std::string& name) {
+            return name.empty() ? tensor::TensorView{} : resolve(name).view();
+        };
         weights_.push_back({
             {resolve(mapping->queryProjection.tensorName).view(),
              resolve(mapping->keyProjection.tensorName).view(),
              resolve(mapping->valueProjection.tensorName).view(),
-             resolve(mapping->outputProjection.tensorName).view()},
+             resolve(mapping->outputProjection.tensorName).view(),
+             optional(mapping->queryNormTensor),
+             optional(mapping->keyNormTensor)},
             resolve(mapping->postAttentionNormTensor).view(),
             resolve(mapping->routerTensor).view(),
             attentionConfiguration,
@@ -167,6 +178,7 @@ ModelExecutionResult TransformerModelRuntime::executeImpl(
         modelResult.layers.push_back({
             static_cast<LayerId>(layerId), layerResult.timings,
             layerResult.moe.execution, layerResult.moe.routing.tokens,
+            layerResult.attention.output, layerResult.moe.expertOutputs,
             layerResult.output});
         current = std::move(layerResult.output);
         currentView = current.view();

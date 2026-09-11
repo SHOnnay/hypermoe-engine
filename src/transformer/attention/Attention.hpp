@@ -18,6 +18,8 @@ struct AttentionWeights {
     tensor::TensorView key;
     tensor::TensorView value;
     tensor::TensorView output;
+    tensor::TensorView queryNorm{};
+    tensor::TensorView keyNorm{};
 };
 
 struct AttentionResult {
@@ -37,6 +39,7 @@ struct AttentionConfiguration {
     bool causal{};
     bool rotaryEmbedding{};
     float ropeTheta{10000.0F};
+    float queryKeyNormEpsilon{1.0e-6F};
     std::uint32_t layerIndex{};
     std::uint64_t positionOffset{};
     hypermoe::runtime::cache::KVCacheBase* kvCache{};

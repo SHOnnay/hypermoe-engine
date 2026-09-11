@@ -8,7 +8,10 @@ continues to provide FP32 GEMM, while correctness-first CUDA kernels remove the
 largest reference-path staging boundaries. CPU remains a complete fallback.
 Real Qwen-compatible artifacts can be imported, validated, packed, and prepared
 for traced CPU/CUDA comparison; no checkpoint or RTX benchmark is bundled or
-fabricated. There is no server or chat API.
+fabricated. Phase 20 adds a strict Qwen checkpoint descriptor, transactional
+runtime-artifact conversion, demand-resident packed-model execution, detailed
+intermediate trace comparison, and measured single-sequence profiling. There is
+no server or chat API.
 
 Phase 14.5 hardens the same runtime contracts across 64-bit little-endian
 Windows, Linux, and macOS targets. It adds explicit wire-enum values, alignment
@@ -53,6 +56,12 @@ ctest --test-dir build --output-on-failure
 ./build/hypermoe_forward_benchmark forward_report.json
 ./build/hypermoe_real_model_benchmark /path/to/qwen-checkpoint \
   /path/to/packed-output real_model_report.json
+./build/hypermoe_real_checkpoint_convert /path/to/qwen-checkpoint \
+  /path/to/runtime-artifact
+./build/hypermoe_profile_real_model /path/to/runtime-artifact \
+  1,42,73 cpu real_model_profile.json
+./build/hypermoe_real_qwen_validate /path/to/runtime-artifact \
+  1,42,73 cpu_cuda_validation.json
 ```
 
 Enable runtime memory checks with:
@@ -104,6 +113,9 @@ operations, staged correctness paths, backend selection, and validation rules.
 The [GPU dataflow](docs/components/gpu-dataflow.md) and
 [real-model validation](docs/components/real-model-validation.md) documents
 describe the Phase 18/19 execution and artifact-validation boundaries.
+See [real Qwen runtime](docs/components/real-qwen-runtime.md) and
+[real-model profiling](docs/components/profiling.md) for Phase 20 artifact
+requirements, execution flow, metric definitions, and current compatibility.
 
 The Phase 1 simulator accepts `--requests`, `--seed`, `--vram-mib`, and
 `--ram-mib`. The Phase 2 simulator accepts `--tokens`, `--seed`, `--read-mode`

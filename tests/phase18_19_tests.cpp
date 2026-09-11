@@ -162,8 +162,14 @@ bool close(std::span<const float> actual, std::span<const float> expected) {
 
 void testRealModelComparison() {
     using namespace hypermoe;
-    validation::RealModelTrace cpu{
-        {1, 2, 3}, {{1, 2}, {3, 4}}, {{0.5F, 1.0F}}};
+    validation::RealModelTrace cpu;
+    cpu.embeddings = {1, 2};
+    cpu.attentionOutputs = {{1, 2}};
+    cpu.logits = {1, 2, 3};
+    cpu.finalNormalization = {1, 2};
+    cpu.transformerOutputs = {{1, 2}, {3, 4}};
+    cpu.expertOutputs = {{0.5F, 1.0F}};
+    cpu.selectedExperts = {{0}};
     const auto same = validation::RealModelValidator::compare(cpu, cpu);
     expect(same.matches() && same.toJson().find("\"matches\":true") !=
                std::string::npos,

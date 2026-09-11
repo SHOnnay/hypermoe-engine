@@ -72,6 +72,7 @@ struct ParsedTensorName {
         FusedDown,
         Router,
         Attention,
+        AttentionNorm,
         InputNorm,
         PostAttentionNorm,
     };
@@ -93,6 +94,9 @@ std::optional<ParsedTensorName> parseName(const std::string& name) {
         std::regex::ECMAScript | std::regex::optimize);
     static const std::regex attention(
         R"(^model\.layers\.([0-9]+)\.self_attn\.(q_proj|k_proj|v_proj|o_proj)\.weight$)",
+        std::regex::ECMAScript | std::regex::optimize);
+    static const std::regex attentionNorm(
+        R"(^model\.layers\.([0-9]+)\.self_attn\.(q_norm|k_norm)\.weight$)",
         std::regex::ECMAScript | std::regex::optimize);
     static const std::regex inputNorm(
         R"(^model\.layers\.([0-9]+)\.input_layernorm\.weight$)",
@@ -125,6 +129,10 @@ std::optional<ParsedTensorName> parseName(const std::string& name) {
     }
     if (std::regex_match(name, match, attention)) {
         return ParsedTensorName{ParsedTensorName::Kind::Attention,
+                                checkedId(match[1]), std::nullopt, match[2].str()};
+    }
+    if (std::regex_match(name, match, attentionNorm)) {
+        return ParsedTensorName{ParsedTensorName::Kind::AttentionNorm,
                                 checkedId(match[1]), std::nullopt, match[2].str()};
     }
     if (std::regex_match(name, match, inputNorm)) {
@@ -276,6 +284,16 @@ models::ModelManifest QwenImporter::inspect(
     manifest.runtimeArchitecture = runtimeArchitecture;
 
     const auto allTensors = SafeTensors::inspectArtifact(artifact);
+    for (const auto& value : allTensors) {
+        const auto elements = value.shape.elementCount();
+        if (elements > std::numeric_limits<std::uint64_t>::max() ||
+            manifest.parameterCount >
+                std::numeric_limits<std::uint64_t>::max() -
+                    static_cast<std::uint64_t>(elements)) {
+            throw MetadataError("Qwen checkpoint parameter count overflows");
+        }
+        manifest.parameterCount += static_cast<std::uint64_t>(elements);
+    }
     manifest.config.capabilities.quantizedExpertWeights =
         std::any_of(allTensors.begin(), allTensors.end(), [](const auto& value) {
             return value.dtype == tensor::DType::INT8;
@@ -334,6 +352,18 @@ models::ModelManifest QwenImporter::inspect(
             } else {
                 layer.outputProjection = std::move(binding);
             }
+        } else if (parsed->kind == ParsedTensorName::Kind::AttentionNorm) {
+            if (tensor.shape != tensor::Shape{runtimeArchitecture.headDimension}) {
+                throw MetadataError("Qwen Q/K normalization tensor shape is incompatible");
+            }
+            auto& layer = layerMappings[parsed->layer];
+            layer.layerId = parsed->layer;
+            auto& name = parsed->projection == "q_norm"
+                ? layer.queryNormTensor : layer.keyNormTensor;
+            if (!name.empty()) {
+                throw MetadataError("duplicate Qwen Q/K normalization tensor");
+            }
+            name = tensor.name;
         } else if (parsed->kind == ParsedTensorName::Kind::InputNorm) {
             auto& layer = layerMappings[parsed->layer];
             layer.layerId = parsed->layer;

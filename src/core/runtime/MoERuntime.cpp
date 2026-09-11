@@ -113,6 +113,16 @@ BatchLayerExecutionResult MoERuntime::executeBatch(
     for (const auto& batch : batches) {
         const auto expert = experts_.findExpert(layerId, batch.expertId);
         if (!expert) throw std::out_of_range("router selected an unregistered expert");
+        if (expert->location == MemoryTier::Vram) {
+            ++metadata.expertCacheHits;
+        } else {
+            ++metadata.expertCacheMisses;
+            if (metadata.expertTransferBytes >
+                std::numeric_limits<std::uint64_t>::max() - expert->sizeBytes) {
+                throw std::overflow_error("expert transfer byte count overflow");
+            }
+            metadata.expertTransferBytes += expert->sizeBytes;
+        }
         if (metadata.expertPayloadBytes >
             std::numeric_limits<std::uint64_t>::max() - expert->sizeBytes) {
             throw std::overflow_error("expert payload byte count overflow");

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(HyperMoE VERSION 0.19.0 LANGUAGES CXX)
+project(HyperMoE VERSION 0.20.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -119,6 +119,7 @@ add_library(hypermoe
     src/cache/LFUPolicy.cpp
     src/cache/HybridPolicy.cpp
     src/profiling/Profiler.cpp
+    src/profiling/RealModelProfile.cpp
     src/backend/Backend.cpp
     src/backend/CpuBackend.cpp
     src/backend/cuda/CudaMemoryManager.cpp
@@ -161,12 +162,14 @@ add_library(hypermoe
     src/models/runtime/ModelArchitecture.cpp
     src/models/runtime/TransformerModelRuntime.cpp
     src/models/runtime/ModelRuntime.cpp
+    src/models/runtime/PackedModelRuntime.cpp
     src/models/metadata/JsonValue.cpp
     src/models/qwen/QwenMoEAdapter.cpp
     src/importer/SafeTensors.cpp
     src/importer/SafeTensorShardManager.cpp
     src/importer/validation/CheckpointValidator.cpp
     src/importer/qwen/QwenImporter.cpp
+    src/importer/qwen/QwenCheckpointLoader.cpp
     src/router/RouterConfig.cpp
     src/router/Router.cpp
     src/router/CpuRouterBackend.cpp
@@ -188,6 +191,7 @@ add_library(hypermoe
     src/transformer/output/LMHead.cpp
     tools/model_convert/WeightConverter.cpp
     tools/model_convert/ExpertPacker.cpp
+    tools/model_convert/real_checkpoint/RealCheckpointConverter.cpp
     src/validation/CorrectnessOracle.cpp
     src/validation/RealModelValidation.cpp
 )
@@ -300,6 +304,10 @@ if(HYPERMOE_BUILD_TESTS)
     add_executable(hypermoe_phase18_19_tests tests/phase18_19_tests.cpp)
     target_link_libraries(hypermoe_phase18_19_tests PRIVATE HyperMoE::hypermoe)
     add_test(NAME hypermoe_phase18_19 COMMAND hypermoe_phase18_19_tests)
+
+    add_executable(hypermoe_phase20_tests tests/phase20_tests.cpp)
+    target_link_libraries(hypermoe_phase20_tests PRIVATE HyperMoE::hypermoe)
+    add_test(NAME hypermoe_phase20 COMMAND hypermoe_phase20_tests)
 endif()
 
 if(HYPERMOE_BUILD_BENCHMARKS)
@@ -372,6 +380,18 @@ if(HYPERMOE_BUILD_BENCHMARKS)
     add_executable(hypermoe_real_model_benchmark
         benchmarks/real_model/real_model_benchmark.cpp)
     target_link_libraries(hypermoe_real_model_benchmark PRIVATE HyperMoE::hypermoe)
+
+    add_executable(hypermoe_profile_real_model
+        benchmarks/profile_real_model/profile_real_model_benchmark.cpp)
+    target_link_libraries(hypermoe_profile_real_model PRIVATE HyperMoE::hypermoe)
+
+    add_executable(hypermoe_real_checkpoint_convert
+        tools/model_convert/real_checkpoint/main.cpp)
+    target_link_libraries(hypermoe_real_checkpoint_convert PRIVATE HyperMoE::hypermoe)
+
+    add_executable(hypermoe_real_qwen_validate
+        tools/model_validate/real_qwen_validate.cpp)
+    target_link_libraries(hypermoe_real_qwen_validate PRIVATE HyperMoE::hypermoe)
 
     add_executable(hypermoe_model_inspect
         tools/model_inspect/model_inspect.cpp)

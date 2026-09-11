@@ -228,6 +228,33 @@ Qwen-compatible artifact -> QwenImporter -> CheckpointValidator
                  logits + per-layer + per-expert intermediate tensors
 ```
 
+Phase 20 connects that validated artifact to a reusable execution graph:
+
+```text
+HF SafeTensors shards + index + config + tokenizer metadata
+                            |
+                   QwenCheckpointLoader
+                            |
+                  RealCheckpointConverter
+                            |
+      manifest + experts.bin/index + tokenizer metadata/assets
+                            |
+                    PackedModelRuntime
+               /                         \
+ static tensors: one-time FP32 load       experts: scheduled on demand
+               \                         /
+       embedding -> transformer layers -> final norm -> LM head
+                            |
+              logits + attention/layer/expert trace
+                            |
+       RealModelValidator / RealModelProfileCollector
+```
+
+Storage dtype and execution dtype are distinct. Packed FP16/BF16 shared tensors
+are promoted to FP32 while loading; expert projections are promoted only after
+the selected expert becomes resident. The runtime never loads every expert into
+RAM. CUDA and CPU construct the same graph from the same manifest.
+
 ## Components
 
 - `ExpertIndex` parses a versioned, fixed-width little-endian format and builds
@@ -267,6 +294,17 @@ Qwen-compatible artifact -> QwenImporter -> CheckpointValidator
 - `RealModelValidator` composes importer, source-checkpoint validation, expert
   packing, runtime-manifest validation, and deterministic CPU/CUDA trace
   comparison without embedding Qwen tensor names in the runtime.
+- `QwenCheckpointLoader` validates config, sharded SafeTensors/index mappings,
+  complete forward tensors, tokenizer vocabulary IDs, special-token IDs, and
+  tokenizer metadata before conversion starts.
+- `RealCheckpointConverter` transactionally creates a self-contained runtime
+  artifact and preserves the original artifact if an overwrite is attempted.
+- `PackedModelRuntime` binds shared tensors once, keeps experts under scheduler
+  residency, selects CPU or CUDA components, and executes single-sequence token
+  IDs to logits.
+- `RealModelProfileCollector` reports measured load/forward/decode time,
+  layer-qualified expert frequency, transfers, cache/prefetch counters, KV
+  storage, and runtime-accounted RAM/VRAM.
 - `CudaRuntime` initializes a selected device, reports compute capability and
   live VRAM information, owns created streams/events, and shuts them down after
   synchronization. With CUDA disabled it remains queryable and reports
@@ -458,12 +496,12 @@ addition to tier-independent events.
 ## Deferred intentionally
 
 - GGUF readers and DeepSeek/GLM/Kimi/Mixtral artifact importers
-- Native CUDA router, softmax/context, RMSNorm, RoPE, embedding lookup,
-  activation, grouped gather/scatter, and paged KV cache layout
+- CUDA embedding lookup, LM head specialization, and paged KV cache layout
 - Direct-storage integrations and unbuffered platform-specific NVMe benchmarks
-- Real tokenizer artifact parsing/chat templates, dense/non-MoE layers, output
-  bias, batched sessions, beam/speculative decoding, streaming, and serving
+- Executing tokenizer vocabulary/merges or chat templates, Qwen2 shared-expert
+  residuals, dense/non-MoE layers, output bias, batched sessions,
+  beam/speculative decoding, streaming, and serving
 - Automatic scheduler-driven capacity selection and eviction policy execution
 - Quantized dequantization/GEMM, batched/strided GEMM, FP16 compute, kernel launch
   policy, and CUDA graphs
-- Custom CUDA kernels
+- Fused or precision-specialized CUDA kernels

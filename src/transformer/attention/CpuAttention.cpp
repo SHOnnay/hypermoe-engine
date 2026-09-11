@@ -31,6 +31,38 @@ std::size_t checkedWidth(std::size_t heads, std::size_t dimension) {
     return heads * dimension;
 }
 
+void applyHeadRmsNorm(tensor::Tensor& values,
+                      tensor::TensorView weight,
+                      std::size_t tokenCount,
+                      std::size_t headCount,
+                      std::size_t headDimension,
+                      float epsilon) {
+    if (!weight || weight.device() != tensor::Device::cpu() ||
+        weight.dtype() != tensor::DType::FP32 || !weight.isContiguous() ||
+        weight.shape() != tensor::Shape{headDimension} ||
+        !std::isfinite(epsilon) || epsilon <= 0.0F) {
+        throw std::invalid_argument("attention Q/K normalization is incompatible");
+    }
+    auto* data = static_cast<float*>(values.data());
+    const auto* scale = static_cast<const float*>(weight.data());
+    for (std::size_t token = 0; token < tokenCount; ++token) {
+        for (std::size_t head = 0; head < headCount; ++head) {
+            const auto base = (token * headCount + head) * headDimension;
+            double squareSum{};
+            for (std::size_t feature = 0; feature < headDimension; ++feature) {
+                const auto value = data[base + feature];
+                squareSum += static_cast<double>(value) * value;
+            }
+            const auto inverseRms = 1.0 / std::sqrt(
+                squareSum / static_cast<double>(headDimension) + epsilon);
+            for (std::size_t feature = 0; feature < headDimension; ++feature) {
+                data[base + feature] = static_cast<float>(
+                    data[base + feature] * inverseRms * scale[feature]);
+            }
+        }
+    }
+}
+
 } // namespace
 
 CpuAttention::CpuAttention(std::shared_ptr<tensor::TensorBackend> backend)
@@ -56,6 +88,8 @@ AttentionResult CpuAttention::execute(
     [[maybe_unused]] const auto keyOwner = weights.key.lockOwner();
     [[maybe_unused]] const auto valueOwner = weights.value.lockOwner();
     [[maybe_unused]] const auto outputOwner = weights.output.lockOwner();
+    [[maybe_unused]] const auto queryNormOwner = weights.queryNorm.lockOwner();
+    [[maybe_unused]] const auto keyNormOwner = weights.keyNorm.lockOwner();
     if (!hiddenOwner || !queryOwner || !keyOwner || !valueOwner || !outputOwner) {
         throw std::invalid_argument("attention received expired tensor storage");
     }
@@ -108,6 +142,25 @@ AttentionResult CpuAttention::execute(
     backend_->matmul(hiddenStates, weights.query, result.query);
     backend_->matmul(hiddenStates, weights.key, result.key);
     backend_->matmul(hiddenStates, weights.value, result.value);
+
+    if (static_cast<bool>(weights.queryNorm) !=
+        static_cast<bool>(weights.keyNorm)) {
+        throw std::invalid_argument(
+            "attention requires both query and key normalization weights");
+    }
+    if (weights.queryNorm) {
+        if (!queryNormOwner || !keyNormOwner) {
+            throw std::invalid_argument(
+                "attention received expired Q/K normalization storage");
+        }
+        applyHeadRmsNorm(result.query, weights.queryNorm, tokenCount,
+                         configuration.headCount, configuration.headDimension,
+                         configuration.queryKeyNormEpsilon);
+        applyHeadRmsNorm(result.key, weights.keyNorm, tokenCount,
+                         configuration.keyValueHeadCount,
+                         configuration.headDimension,
+                         configuration.queryKeyNormEpsilon);
+    }
 
     if (configuration.rotaryEmbedding) {
         position::RoPE rope(configuration.ropeTheta);

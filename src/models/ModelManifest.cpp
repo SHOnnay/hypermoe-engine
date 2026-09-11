@@ -321,6 +321,20 @@ void ModelManifest::validate() const {
                             {runtime.hiddenDimension, keyValueWidth});
             validateBinding(layer.outputProjection,
                             {queryWidth, runtime.hiddenDimension});
+            if (layer.queryNormTensor.empty() != layer.keyNormTensor.empty()) {
+                throw std::invalid_argument(
+                    "transformer Q/K normalization mappings must form a pair");
+            }
+            if (!layer.queryNormTensor.empty()) {
+                const auto queryNorm = byName.find(layer.queryNormTensor);
+                const auto keyNorm = byName.find(layer.keyNormTensor);
+                if (queryNorm == byName.end() || keyNorm == byName.end() ||
+                    queryNorm->second->shape != tensor::Shape{runtime.headDimension} ||
+                    keyNorm->second->shape != tensor::Shape{runtime.headDimension}) {
+                    throw std::invalid_argument(
+                        "transformer Q/K normalization mapping is incompatible");
+                }
+            }
             const auto inputNorm = byName.find(layer.inputNormTensor);
             const auto postNorm = byName.find(layer.postAttentionNormTensor);
             if (inputNorm == byName.end() || postNorm == byName.end() ||
@@ -407,6 +421,7 @@ std::string ModelManifest::toJson() const {
            << "  \"architecture\": \"" << toString(architecture) << "\",\n"
            << "  \"source_architecture\": \"" << escapeJson(sourceArchitecture)
            << "\",\n  \"layer_count\": " << config.layerCount
+           << ",\n  \"parameter_count\": " << parameterCount
            << ",\n  \"expert_count\": " << config.expertCount
            << ",\n  \"hidden_size\": " << config.hiddenSize
            << ",\n  \"intermediate_size\": " << config.intermediateSize << ",\n"
@@ -494,6 +509,8 @@ std::string ModelManifest::toJson() const {
         writeBinding(output, layer.valueProjection);
         output << ",\"o_proj\":";
         writeBinding(output, layer.outputProjection);
+        output << ",\"q_norm\":\"" << escapeJson(layer.queryNormTensor)
+               << "\",\"k_norm\":\"" << escapeJson(layer.keyNormTensor) << '"';
         output << ",\"input_norm\":\"" << escapeJson(layer.inputNormTensor)
                << "\",\"post_attention_norm\":\""
                << escapeJson(layer.postAttentionNormTensor)
@@ -520,6 +537,9 @@ ModelManifest ModelManifest::load(const std::filesystem::path& path) {
     result.modelName = root.require("model_name").asString();
     result.architecture = parseArchitecture(root.require("architecture").asString());
     result.sourceArchitecture = root.require("source_architecture").asString();
+    if (const auto* parameterCount = root.find("parameter_count")) {
+        result.parameterCount = parameterCount->asUInt64();
+    }
     result.config.modelName = result.modelName;
     result.config.layerCount = asSize(root.require("layer_count"), "layer_count");
     result.config.expertCount = asSize(root.require("expert_count"), "expert_count");
@@ -619,6 +639,12 @@ ModelManifest ModelManifest::load(const std::filesystem::path& path) {
             value.keyProjection = parseBinding(layerValue.require("k_proj"));
             value.valueProjection = parseBinding(layerValue.require("v_proj"));
             value.outputProjection = parseBinding(layerValue.require("o_proj"));
+            if (const auto* queryNorm = layerValue.find("q_norm")) {
+                value.queryNormTensor = queryNorm->asString();
+            }
+            if (const auto* keyNorm = layerValue.find("k_norm")) {
+                value.keyNormTensor = keyNorm->asString();
+            }
             value.inputNormTensor = layerValue.require("input_norm").asString();
             value.postAttentionNormTensor =
                 layerValue.require("post_attention_norm").asString();

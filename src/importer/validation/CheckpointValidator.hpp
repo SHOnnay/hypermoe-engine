@@ -17,6 +17,8 @@ struct CheckpointValidationReport {
     std::size_t expertCount{};
     std::size_t routerTensorCount{};
     std::uint64_t referencedBytes{};
+    std::uint64_t totalBytes{};
+    std::uint64_t totalParameters{};
     std::map<std::string, std::size_t> dtypeCounts;
 };
 

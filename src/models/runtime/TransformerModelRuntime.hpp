@@ -47,6 +47,8 @@ struct ModelLayerExecution {
     transformer::runtime::TransformerBlockTimings timings;
     hypermoe::runtime::ExecutionMetadata execution;
     std::vector<router::RouterDecision> routing;
+    tensor::Tensor attentionOutput;
+    std::vector<tensor::Tensor> expertOutputs;
     tensor::Tensor output;
 };
 

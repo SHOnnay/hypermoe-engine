@@ -13,7 +13,10 @@ namespace hypermoe::runtime {
 struct ExecutionMetadata {
     std::size_t expertAssignments{};
     std::size_t uniqueExperts{};
+    std::size_t expertCacheHits{};
+    std::size_t expertCacheMisses{};
     std::uint64_t expertPayloadBytes{};
+    std::uint64_t expertTransferBytes{};
     std::string tensorBackend;
     std::chrono::nanoseconds routingTime{};
     std::chrono::nanoseconds schedulingTime{};

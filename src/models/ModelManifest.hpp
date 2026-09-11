@@ -82,6 +82,8 @@ struct ManifestLayerMapping {
     std::string inputNormTensor;
     std::string postAttentionNormTensor;
     std::string routerTensor;
+    std::string queryNormTensor{};
+    std::string keyNormTensor{};
 };
 
 struct ManifestModelIO {
@@ -100,6 +102,7 @@ public:
     std::string modelName;
     ModelArchitecture architecture{ModelArchitecture::UNKNOWN};
     std::string sourceArchitecture;
+    std::uint64_t parameterCount{};
     ModelConfig config;
     std::optional<runtime::ModelArchitecture> runtimeArchitecture;
     ManifestRouter router;

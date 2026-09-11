@@ -330,6 +330,12 @@ PackingReport ExpertPacker::pack(const models::ModelManifest& sourceManifest,
             layer.keyProjection = packTensor(sourceLayer.keyProjection, "k_proj");
             layer.valueProjection = packTensor(sourceLayer.valueProjection, "v_proj");
             layer.outputProjection = packTensor(sourceLayer.outputProjection, "o_proj");
+            if (!sourceLayer.queryNormTensor.empty()) {
+                layer.queryNormTensor = packNorm(sourceLayer.queryNormTensor, "q_norm");
+            }
+            if (!sourceLayer.keyNormTensor.empty()) {
+                layer.keyNormTensor = packNorm(sourceLayer.keyNormTensor, "k_norm");
+            }
             layer.inputNormTensor = packNorm(sourceLayer.inputNormTensor, "input_norm");
             layer.postAttentionNormTensor = packNorm(
                 sourceLayer.postAttentionNormTensor, "post_attention_norm");

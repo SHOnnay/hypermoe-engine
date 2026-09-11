@@ -678,3 +678,30 @@ The Phase 19 validator compares logits together with per-layer transformer and
 per-expert outputs. Artifact preparation first requires importer discovery,
 checkpoint validation, packing validation, and a complete runtime manifest, so
 execution cannot silently proceed from an incomplete or guessed tensor map.
+
+## Why packed-model construction separates storage and execution dtype
+
+Most Qwen checkpoints store FP16 or BF16 tensors, while the current correctness
+backend executes FP32. The runtime loader therefore validates bytes against the
+manifest and promotes only persistent shared tensors during construction.
+Experts remain in their packed storage dtype and are promoted after routing and
+residency. This avoids loading every sparse expert into RAM while keeping one
+explicit numerical reference for CPU/CUDA comparison.
+
+## Why unsupported Qwen semantics fail before execution
+
+Recognizing a Qwen2 checkpoint layout is not equivalent to implementing its
+shared-expert gated residual. Producing logits while silently ignoring that
+branch would be worse than rejecting the artifact. Phase 20 validates and
+converts Qwen2 routed-expert layouts, but `PackedModelRuntime` refuses manifests
+that declare shared experts until that computation is represented in the neutral
+runtime graph. The same rule applies to future dense-layer or output-bias forms.
+
+## Why Qwen Q/K normalization is represented in the neutral manifest
+
+Qwen3 attention can normalize each query and key head before rotary position
+embedding. Treating those weights as importer-only details would silently
+produce incorrect attention and logits. The layer manifest therefore carries
+an optional paired Q/K normalization binding, and both backends apply the same
+FP32 RMSNorm operation before RoPE. Older architecture fixtures without the
+pair remain valid; a partial pair is rejected.

@@ -58,6 +58,8 @@ AttentionResult CudaAttention::execute(
         [[maybe_unused]] const auto keyOwner = weights.key.lockOwner();
         [[maybe_unused]] const auto valueOwner = weights.value.lockOwner();
         [[maybe_unused]] const auto outputOwner = weights.output.lockOwner();
+        [[maybe_unused]] const auto queryNormOwner = weights.queryNorm.lockOwner();
+        [[maybe_unused]] const auto keyNormOwner = weights.keyNorm.lockOwner();
         const auto matrix = [&](tensor::TensorView value) {
             return value && value.device() == device() &&
                    value.dtype() == tensor::DType::FP32 && value.isContiguous() &&
@@ -105,6 +107,47 @@ AttentionResult CudaAttention::execute(
         backend_->matmul(hiddenStates, weights.query, result.query.view());
         backend_->matmul(hiddenStates, weights.key, result.key.view());
         backend_->matmul(hiddenStates, weights.value, result.value.view());
+        if (static_cast<bool>(weights.queryNorm) !=
+            static_cast<bool>(weights.keyNorm)) {
+            throw std::invalid_argument(
+                "CUDA attention requires both query and key normalization weights");
+        }
+        if (weights.queryNorm) {
+            const auto normWeight = [&](tensor::TensorView value,
+                                        const std::shared_ptr<void>& owner) {
+                return owner && value.device() == device() &&
+                       value.dtype() == tensor::DType::FP32 &&
+                       value.isContiguous() &&
+                       value.shape() == tensor::Shape{headDimension};
+            };
+            if (!normWeight(weights.queryNorm, queryNormOwner) ||
+                !normWeight(weights.keyNorm, keyNormOwner) ||
+                !std::isfinite(configuration.queryKeyNormEpsilon) ||
+                configuration.queryKeyNormEpsilon <= 0.0F) {
+                throw std::invalid_argument(
+                    "CUDA attention Q/K normalization is incompatible");
+            }
+            auto normalizedQuery = backend_->allocateTensor(
+                result.query.shape(), tensor::DType::FP32);
+            auto normalizedKey = backend_->allocateTensor(
+                result.key.shape(), tensor::DType::FP32);
+            cuda->rmsNorm(
+                result.query.view().reshape(
+                    {tokenCount * configuration.headCount, headDimension}),
+                weights.queryNorm,
+                normalizedQuery.view().reshape(
+                    {tokenCount * configuration.headCount, headDimension}),
+                configuration.queryKeyNormEpsilon);
+            cuda->rmsNorm(
+                result.key.view().reshape(
+                    {tokenCount * configuration.keyValueHeadCount, headDimension}),
+                weights.keyNorm,
+                normalizedKey.view().reshape(
+                    {tokenCount * configuration.keyValueHeadCount, headDimension}),
+                configuration.queryKeyNormEpsilon);
+            result.query = std::move(normalizedQuery);
+            result.key = std::move(normalizedKey);
+        }
         if (configuration.rotaryEmbedding) {
             cuda->applyRoPE(result.query.view(), tokenCount, configuration.headCount,
                             headDimension,
@@ -163,11 +206,24 @@ AttentionResult CudaAttention::execute(
     auto hostKeyWeights = toHost(*backend_, weights.key);
     auto hostValueWeights = toHost(*backend_, weights.value);
     auto hostOutputWeights = toHost(*backend_, weights.output);
+    tensor::Tensor hostQueryNorm;
+    tensor::Tensor hostKeyNorm;
+    if (weights.queryNorm) {
+        if (!weights.keyNorm) {
+            throw std::invalid_argument(
+                "CUDA attention requires both query and key normalization weights");
+        }
+        hostQueryNorm = toHost(*backend_, weights.queryNorm);
+        hostKeyNorm = toHost(*backend_, weights.keyNorm);
+    } else if (weights.keyNorm) {
+        throw std::invalid_argument(
+            "CUDA attention requires both query and key normalization weights");
+    }
     CpuAttention reference(hostBackend);
     auto host = reference.execute(
         hostHidden.view(),
         {hostQueryWeights.view(), hostKeyWeights.view(), hostValueWeights.view(),
-         hostOutputWeights.view()},
+         hostOutputWeights.view(), hostQueryNorm.view(), hostKeyNorm.view()},
         configuration);
 
     AttentionResult result;
@@ -181,7 +237,7 @@ AttentionResult CudaAttention::execute(
     backend_->matmul(hiddenStates, weights.query, result.query.view());
     backend_->matmul(hiddenStates, weights.key, result.key.view());
     backend_->matmul(hiddenStates, weights.value, result.value.view());
-    if (configuration.rotaryEmbedding) {
+    if (configuration.rotaryEmbedding || weights.queryNorm) {
         backend_->copyTensor(host.query.view(), result.query.view());
         backend_->copyTensor(host.key.view(), result.key.view());
     }

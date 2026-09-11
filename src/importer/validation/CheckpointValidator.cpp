@@ -18,6 +18,24 @@ CheckpointValidationReport CheckpointValidator::validate(
     report.tensorCount = shards.tensors().size();
     report.expertCount = manifest.experts.size();
     report.routerTensorCount = manifest.router.tensors.size();
+    for (const auto& value : shards.tensors()) {
+        const auto elements = value.shape.elementCount();
+        if (elements > std::numeric_limits<std::uint64_t>::max() ||
+            report.totalParameters >
+                std::numeric_limits<std::uint64_t>::max() -
+                    static_cast<std::uint64_t>(elements) ||
+            report.totalBytes >
+                std::numeric_limits<std::uint64_t>::max() - value.size) {
+            throw std::overflow_error("checkpoint physical size accounting overflows");
+        }
+        report.totalParameters += static_cast<std::uint64_t>(elements);
+        report.totalBytes += value.size;
+    }
+    if (manifest.parameterCount != 0 &&
+        manifest.parameterCount != report.totalParameters) {
+        throw std::invalid_argument(
+            "manifest parameter count disagrees with source checkpoint");
+    }
     std::set<std::string> referenced;
     for (const auto& value : manifest.tensors) {
         const auto* source = shards.find(value.name);
