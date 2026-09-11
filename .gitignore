@@ -3,3 +3,4 @@ model_runtime_report.json
 model_validation_report.json
 transformer_report.json
 build/
+build-ninja/
