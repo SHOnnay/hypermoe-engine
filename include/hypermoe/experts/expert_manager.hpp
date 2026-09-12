@@ -83,6 +83,19 @@ struct ExpertManagerStats {
     [[nodiscard]] double vramHitRate() const noexcept;
 };
 
+struct ExpertResidencyInfo {
+    LayerId layerId{};
+    ExpertId expertId{};
+    MemoryTier location{MemoryTier::Nvme};
+    std::size_t sizeBytes{};
+    std::uint64_t usageCount{};
+    std::uint64_t lastUsed{};
+    double predictionProbability{};
+    double prefetchConfidence{};
+    double residencyScore{};
+    bool hot{};
+};
+
 class ExpertManager {
 public:
     ExpertManager(MemoryManager& memory, std::unique_ptr<CachePolicy> policy);
@@ -143,6 +156,12 @@ public:
         LayerId layerId, ExpertId id);
     [[nodiscard]] std::size_t expertCount() const;
     [[nodiscard]] ExpertManagerStats stats() const;
+    void updatePrediction(LayerId layerId,
+                          ExpertId id,
+                          double probability,
+                          double confidence);
+    [[nodiscard]] std::vector<ExpertResidencyInfo> residencySnapshot() const;
+    [[nodiscard]] double residencyScore(LayerId layerId, ExpertId id) const;
 
 private:
     struct ManagedExpert {
@@ -152,6 +171,10 @@ private:
         std::shared_ptr<const std::vector<std::byte>> weights;
         std::shared_ptr<backend::DeviceBuffer> deviceWeights;
         std::shared_ptr<std::atomic_size_t> residencyLeases;
+        std::uint64_t usageCount{};
+        std::uint64_t lastUsed{};
+        double predictionProbability{};
+        double prefetchConfidence{};
     };
 
     using ExpertKey = std::uint64_t;
@@ -169,6 +192,9 @@ private:
     [[nodiscard]] std::vector<ExpertId> candidatesLocked(MemoryTier tier) const;
     [[nodiscard]] ManagedExpert& requireExpertLocked(LayerId layerId, ExpertId id);
     [[nodiscard]] LayerId resolveLegacyLayer(ExpertId id) const;
+    void recordAccessLocked(ManagedExpert& expert);
+    [[nodiscard]] double residencyScoreLocked(const ManagedExpert& expert,
+                                              std::uint64_t maximumUsage) const noexcept;
     friend class ExpertResidencyLease;
 
     MemoryManager& memory_;
@@ -179,6 +205,7 @@ private:
     std::unordered_map<ExpertId, ExpertKey> policyExperts_;
     std::unordered_map<ExpertId, std::vector<ExpertKey>> legacyExperts_;
     std::uint64_t nextPolicyId_{};
+    std::uint64_t accessClock_{};
     ExpertManagerStats stats_;
 };
 

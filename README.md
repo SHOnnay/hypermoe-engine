@@ -390,3 +390,26 @@ RMSNorm, and vocabulary projection and returns logits plus measured timing for
 each stage. Phase 14 executes this complete path on the CPU reference backend;
 CUDA output components are intentionally deferred. See [model forward](docs/components/model-forward.md)
 and [output head](docs/components/output-head.md).
+
+## Adaptive expert intelligence
+
+Phase 21 adds deterministic layer-aware prediction with lazy decay, a bounded
+expert-popularity window, explicit probability and confidence, and quality
+metrics. High-confidence predictions enter the scheduler's existing prefetch
+priority band; weaker predictions can still inform residency without causing a
+transfer. The packed runtime selects the hybrid residency policy by default,
+while configuration switches retain the LRU/no-prediction baseline for direct
+comparison.
+
+The internal `RuntimeMetricsSnapshot` exposes resident expert counts, RAM/VRAM
+accounting, expert frequency, prediction accuracy, cache hit rate,
+synchronization count, and transfer/kernel latency. It is intentionally an
+in-process API, not a dashboard UI or server. CUDA execution uses a compute-only
+boundary at the transformer block rather than repeatedly stopping transfer and
+prefetch streams.
+
+See [adaptive predictor](docs/components/adaptive-predictor.md) and
+[runtime optimization](docs/components/runtime-optimization.md). Run
+`hypermoe_prediction_benchmark` for the deterministic predictor comparison, or
+`hypermoe_runtime_optimization_benchmark` with a packed artifact for measured
+baseline/adaptive runtime data.

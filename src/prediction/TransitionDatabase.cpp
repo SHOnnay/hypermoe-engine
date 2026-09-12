@@ -1,6 +1,7 @@
 #include "prediction/TransitionDatabase.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 
 namespace hypermoe::prediction {
@@ -23,9 +24,22 @@ std::size_t ExpertCooccurrenceHash::operator()(
     return mix(hash(pair.first), hash(pair.second));
 }
 
-TransitionDatabase::TransitionDatabase(std::size_t recentWindow)
-    : recentWindow_(recentWindow) {
-    if (recentWindow == 0) throw std::invalid_argument("recent window must be nonzero");
+TransitionDatabase::TransitionDatabase(std::size_t recentWindow, double decayFactor)
+    : recentWindow_(recentWindow), decayFactor_(decayFactor) {
+    if (recentWindow == 0 || !std::isfinite(decayFactor) || decayFactor <= 0.0 ||
+        decayFactor > 1.0) {
+        throw std::invalid_argument("invalid transition database configuration");
+    }
+}
+
+double TransitionDatabase::decayedValue(const DecayedCounter& counter) const noexcept {
+    const auto age = observations_ - counter.lastObservation;
+    return counter.value * std::pow(decayFactor_, static_cast<double>(age));
+}
+
+void TransitionDatabase::increment(DecayedCounter& counter) noexcept {
+    counter.value = decayedValue(counter) + 1.0;
+    counter.lastObservation = observations_;
 }
 
 ExpertCooccurrence TransitionDatabase::orderedPair(
@@ -48,10 +62,17 @@ void TransitionDatabase::record(const router::RouterDecision& decision,
     }
     std::scoped_lock lock(mutex_);
     const auto previous = previousByStream_.find(streamId);
-    for (const auto expert : current) ++frequency_[expert];
+    for (const auto expert : current) {
+        ++frequency_[expert];
+        increment(decayedFrequency_[expert]);
+    }
     if (previous != previousByStream_.end()) {
         for (const auto from : previous->second) {
-            for (const auto to : current) ++transitions_[{from, to}];
+            for (const auto to : current) {
+                const ExpertTransition transition{from, to};
+                ++transitions_[transition];
+                increment(decayedTransitions_[transition]);
+            }
         }
     }
     for (std::size_t left = 0; left < current.size(); ++left) {
@@ -76,7 +97,7 @@ TransitionDatabaseSnapshot TransitionDatabase::snapshot() const {
     return {observations_, frequency_, transitions_, cooccurrence_,
             previous == previousByStream_.end() ? std::vector<ExpertSelection>{}
                                                 : previous->second,
-            {recent_.begin(), recent_.end()}};
+            {recent_.begin(), recent_.end()}, decayFactor_};
 }
 
 std::uint64_t TransitionDatabase::frequency(ExpertSelection expert) const {
@@ -133,8 +154,26 @@ PredictionStatistics TransitionDatabase::predictionStatistics(
         candidate.expert = expert;
         candidate.frequency = count;
         candidate.incomingBySource.resize(sources.size());
+        candidate.decayedIncomingBySource.resize(sources.size());
+        const auto decayed = decayedFrequency_.find(expert);
+        if (decayed != decayedFrequency_.end()) {
+            candidate.decayedFrequency = decayedValue(decayed->second);
+        }
         result.layerFrequency += count;
+        result.decayedLayerFrequency += candidate.decayedFrequency;
         result.candidates.push_back(std::move(candidate));
+    }
+    for (const auto& selectionSet : recent_) {
+        for (const auto selection : selectionSet) {
+            if (selection.layerId != targetLayer) continue;
+            ++result.windowLayerFrequency;
+            const auto found = std::find_if(
+                result.candidates.begin(), result.candidates.end(),
+                [selection](const auto& candidate) {
+                    return candidate.expert == selection;
+                });
+            if (found != result.candidates.end()) ++found->windowFrequency;
+        }
     }
     std::sort(result.candidates.begin(), result.candidates.end(),
               [](const auto& left, const auto& right) {
@@ -146,6 +185,12 @@ PredictionStatistics TransitionDatabase::predictionStatistics(
             if (found != transitions_.end()) {
                 candidate.incomingBySource[sourceIndex] = found->second;
                 result.outgoingBySource[sourceIndex] += found->second;
+            }
+            const auto decayed = decayedTransitions_.find(
+                {sources[sourceIndex], candidate.expert});
+            if (decayed != decayedTransitions_.end()) {
+                candidate.decayedIncomingBySource[sourceIndex] =
+                    decayedValue(decayed->second);
             }
         }
     }

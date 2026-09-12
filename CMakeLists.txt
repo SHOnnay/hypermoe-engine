@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(HyperMoE VERSION 0.20.0 LANGUAGES CXX)
+project(HyperMoE VERSION 0.21.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -145,6 +145,7 @@ add_library(hypermoe
     src/experts/ExpertExecutor.cpp
     src/experts/ExpertBatch.cpp
     src/runtime/InferenceContext.cpp
+    src/runtime/metrics/RuntimeMetrics.cpp
     src/runtime/cache/KVCache.cpp
     src/runtime/cache/CudaKVCache.cpp
     src/runtime/cache/KVCacheManager.cpp
@@ -308,6 +309,10 @@ if(HYPERMOE_BUILD_TESTS)
     add_executable(hypermoe_phase20_tests tests/phase20_tests.cpp)
     target_link_libraries(hypermoe_phase20_tests PRIVATE HyperMoE::hypermoe)
     add_test(NAME hypermoe_phase20 COMMAND hypermoe_phase20_tests)
+
+    add_executable(hypermoe_phase21_tests tests/phase21_tests.cpp)
+    target_link_libraries(hypermoe_phase21_tests PRIVATE HyperMoE::hypermoe)
+    add_test(NAME hypermoe_phase21 COMMAND hypermoe_phase21_tests)
 endif()
 
 if(HYPERMOE_BUILD_BENCHMARKS)
@@ -384,6 +389,14 @@ if(HYPERMOE_BUILD_BENCHMARKS)
     add_executable(hypermoe_profile_real_model
         benchmarks/profile_real_model/profile_real_model_benchmark.cpp)
     target_link_libraries(hypermoe_profile_real_model PRIVATE HyperMoE::hypermoe)
+
+    add_executable(hypermoe_prediction_benchmark
+        benchmarks/prediction/prediction_benchmark.cpp)
+    target_link_libraries(hypermoe_prediction_benchmark PRIVATE HyperMoE::hypermoe)
+
+    add_executable(hypermoe_runtime_optimization_benchmark
+        benchmarks/optimization/runtime_optimization_benchmark.cpp)
+    target_link_libraries(hypermoe_runtime_optimization_benchmark PRIVATE HyperMoE::hypermoe)
 
     add_executable(hypermoe_real_checkpoint_convert
         tools/model_convert/real_checkpoint/main.cpp)

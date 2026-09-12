@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -121,7 +122,8 @@ void ExpertManager::registerExpert(Expert expert) {
     expert.location = MemoryTier::Nvme;
     experts_.emplace(expertKey,
                      ManagedExpert{expert, policyId, std::nullopt, nullptr, nullptr,
-                                   std::make_shared<std::atomic_size_t>(0)});
+                                   std::make_shared<std::atomic_size_t>(0), 0, 0,
+                                   0.0, 0.0});
     policyExperts_.emplace(policyId, expertKey);
     legacyExperts_[expert.id].push_back(expertKey);
     if (initialTier != MemoryTier::Nvme) {
@@ -170,7 +172,7 @@ ExpertRequestResult ExpertManager::requestExpert(LayerId layerId, ExpertId id) {
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start)
                 .count();
     }
-    policy_->onAccess(managed.policyId);
+    recordAccessLocked(managed);
     ++stats_.requests;
     if (result.source == RequestSource::VramHit) {
         ++stats_.vramHits;
@@ -400,7 +402,7 @@ void ExpertManager::adoptDeviceWeights(
         if (managed.deviceWeights != buffer) {
             throw std::logic_error("expert already owns a different device buffer");
         }
-        policy_->onAccess(managed.policyId);
+        recordAccessLocked(managed);
         return;
     }
 
@@ -422,7 +424,7 @@ void ExpertManager::adoptDeviceWeights(
     managed.deviceWeights = std::move(buffer);
     managed.metadata.location = MemoryTier::Vram;
     policy_->onResident(managed.policyId, MemoryTier::Vram);
-    policy_->onAccess(managed.policyId);
+    recordAccessLocked(managed);
 }
 
 void ExpertManager::adoptHostWeights(
@@ -446,7 +448,7 @@ void ExpertManager::adoptHostWeights(
         if (managed.weights != buffer) {
             throw std::logic_error("expert already owns a different host buffer");
         }
-        policy_->onAccess(managed.policyId);
+        recordAccessLocked(managed);
         return;
     }
 
@@ -471,7 +473,7 @@ void ExpertManager::adoptHostWeights(
     managed.deviceWeights.reset();
     managed.metadata.location = MemoryTier::Ram;
     policy_->onResident(managed.policyId, MemoryTier::Ram);
-    policy_->onAccess(managed.policyId);
+    recordAccessLocked(managed);
 }
 
 ExpertResidencyLease ExpertManager::acquireResidentExpert(
@@ -493,6 +495,82 @@ std::size_t ExpertManager::expertCount() const {
 ExpertManagerStats ExpertManager::stats() const {
     std::scoped_lock lock(mutex_);
     return stats_;
+}
+
+void ExpertManager::updatePrediction(LayerId layerId,
+                                     ExpertId id,
+                                     double probability,
+                                     double confidence) {
+    if (!std::isfinite(probability) || !std::isfinite(confidence)) {
+        throw std::invalid_argument("expert prediction values must be finite");
+    }
+    std::scoped_lock lock(mutex_);
+    auto& managed = requireExpertLocked(layerId, id);
+    managed.predictionProbability = std::clamp(probability, 0.0, 1.0);
+    managed.prefetchConfidence = std::clamp(confidence, 0.0, 1.0);
+    policy_->setLayerProbability(managed.policyId,
+                                 managed.predictionProbability);
+    policy_->setPrefetchConfidence(managed.policyId,
+                                   managed.prefetchConfidence);
+}
+
+std::vector<ExpertResidencyInfo> ExpertManager::residencySnapshot() const {
+    std::scoped_lock lock(mutex_);
+    std::uint64_t maximumUsage{};
+    for (const auto& [identity, managed] : experts_) {
+        (void)identity;
+        maximumUsage = std::max(maximumUsage, managed.usageCount);
+    }
+    std::vector<ExpertResidencyInfo> result;
+    result.reserve(experts_.size());
+    for (const auto& [identity, managed] : experts_) {
+        (void)identity;
+        const auto score = residencyScoreLocked(managed, maximumUsage);
+        result.push_back({managed.metadata.layer, managed.metadata.id,
+                          managed.metadata.location, managed.metadata.sizeBytes,
+                          managed.usageCount, managed.lastUsed,
+                          managed.predictionProbability,
+                          managed.prefetchConfidence, score, score >= 0.60});
+    }
+    std::sort(result.begin(), result.end(), [](const auto& left, const auto& right) {
+        return left.layerId == right.layerId
+            ? left.expertId < right.expertId
+            : left.layerId < right.layerId;
+    });
+    return result;
+}
+
+double ExpertManager::residencyScore(LayerId layerId, ExpertId id) const {
+    std::scoped_lock lock(mutex_);
+    const auto found = experts_.find(key(layerId, id));
+    if (found == experts_.end()) throw std::out_of_range("unknown expert id");
+    std::uint64_t maximumUsage{};
+    for (const auto& [identity, managed] : experts_) {
+        (void)identity;
+        maximumUsage = std::max(maximumUsage, managed.usageCount);
+    }
+    return residencyScoreLocked(found->second, maximumUsage);
+}
+
+void ExpertManager::recordAccessLocked(ManagedExpert& expert) {
+    ++expert.usageCount;
+    expert.lastUsed = ++accessClock_;
+    policy_->onAccess(expert.policyId);
+}
+
+double ExpertManager::residencyScoreLocked(
+    const ManagedExpert& expert, std::uint64_t maximumUsage) const noexcept {
+    const auto frequency = maximumUsage == 0
+        ? 0.0
+        : static_cast<double>(expert.usageCount) /
+              static_cast<double>(maximumUsage);
+    const auto recency = accessClock_ == 0
+        ? 0.0
+        : static_cast<double>(expert.lastUsed) /
+              static_cast<double>(accessClock_);
+    return 0.4 * frequency + 0.3 * recency +
+           0.2 * expert.predictionProbability +
+           0.1 * expert.prefetchConfidence;
 }
 
 void ExpertManager::moveExpertLocked(LayerId layerId,

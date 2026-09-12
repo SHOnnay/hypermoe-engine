@@ -41,6 +41,7 @@ struct ScheduleRequest {
     std::shared_ptr<PinnedBuffer> pinnedBuffer;
     std::shared_ptr<backend::DeviceBuffer> deviceBuffer;
     bool eviction{};
+    double priorityScore{};
 };
 
 struct ScheduleResult {
@@ -97,6 +98,7 @@ public:
     [[nodiscard]] ExpertState state(LayerId layerId, ExpertId id) const;
     [[nodiscard]] ExpertState state(ExpertId id) const;
     [[nodiscard]] std::size_t pending() const;
+    void expirePrefetchesBefore(LayerId layerId);
     [[nodiscard]] RuntimeEventBus& events() noexcept;
     [[nodiscard]] const ExpertResidencyStateMachine& states() const noexcept;
     void shutdown();
@@ -127,6 +129,7 @@ private:
         TransferPriority priority{TransferPriority::BackgroundMaintenance};
         std::uint64_t sequence{};
         std::uint64_t generation{};
+        double priorityScore{};
     };
 
     struct HigherPriority {

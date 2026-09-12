@@ -3,6 +3,7 @@
 #include "backend/CpuBackend.hpp"
 #include "backend/CudaBackend.hpp"
 #include "cache/LRUPolicy.hpp"
+#include "cache/HybridPolicy.hpp"
 #include "core/runtime/MoERuntime.hpp"
 #include "experts/ExpertExecutor.hpp"
 #include "hypermoe/experts/cache_policy.hpp"
@@ -30,6 +31,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <cmath>
 #include <limits>
 #include <set>
 #include <stdexcept>
@@ -152,7 +154,9 @@ struct PackedModelRuntime::Impl {
 void PackedRuntimeConfiguration::validate() const {
     if (expertDeviceBudgetBytes == 0 || expertRamBudgetBytes == 0 ||
         transferWorkers == 0 || schedulerWorkers == 0 || device.ordinal < 0 ||
-        (device.type == tensor::DeviceType::CPU && device.ordinal != 0)) {
+        (device.type == tensor::DeviceType::CPU && device.ordinal != 0) ||
+        !std::isfinite(minimumPrefetchConfidence) ||
+        minimumPrefetchConfidence < 0.0 || minimumPrefetchConfidence > 1.0) {
         throw std::invalid_argument("packed runtime configuration is invalid");
     }
 }
@@ -186,7 +190,7 @@ PackedModelRuntime::PackedModelRuntime(
         impl_->tensors = std::move(tensorBackend);
         impl_->transferBackend = std::move(computeBackend);
     } else {
-        impl_->tensors = std::make_shared<tensor::CpuTensorBackend>();
+        impl_->tensors = std::make_shared<tensor::CpuTensorBackend>(impl_->profiler);
         impl_->transferBackend = std::make_shared<backend::CpuBackend>();
     }
 
@@ -230,8 +234,14 @@ PackedModelRuntime::PackedModelRuntime(
         impl_->loader, impl_->transferBackend, configuration.transferWorkers);
     impl_->memory = std::make_unique<MemoryManager>(
         configuration.expertDeviceBudgetBytes, configuration.expertRamBudgetBytes);
+    std::unique_ptr<CachePolicy> cachePolicy;
+    if (configuration.adaptiveResidency) {
+        cachePolicy = std::make_unique<HybridPolicy>();
+    } else {
+        cachePolicy = std::make_unique<LruCachePolicy>();
+    }
     impl_->experts = std::make_unique<ExpertManager>(
-        *impl_->memory, std::make_unique<LruCachePolicy>(), impl_->transfers);
+        *impl_->memory, std::move(cachePolicy), impl_->transfers);
     impl_->scheduler = std::make_shared<scheduler::Scheduler>(
         impl_->transfers, impl_->profiler, configuration.schedulerWorkers);
     for (const auto& record : impl_->store->index().records()) {
@@ -245,7 +255,13 @@ PackedModelRuntime::PackedModelRuntime(
     }
     impl_->history = std::make_shared<prediction::ExpertHistory>();
     impl_->transitions = std::make_shared<prediction::TransitionDatabase>();
-    impl_->predictor = std::make_shared<prediction::ExpertPredictor>(impl_->transitions);
+    if (configuration.adaptivePrediction) {
+        prediction::AdaptivePredictionConfig predictorConfiguration;
+        predictorConfiguration.minimumPrefetchConfidence =
+            configuration.minimumPrefetchConfidence;
+        impl_->predictor = std::make_shared<prediction::ExpertPredictor>(
+            impl_->transitions, predictorConfiguration, impl_->profiler);
+    }
     std::shared_ptr<router::RouterBackend> routerBackend;
     if (configuration.device.type == tensor::DeviceType::CUDA) {
         routerBackend = std::make_shared<router::CudaRouterBackend>(impl_->tensors);
@@ -353,8 +369,19 @@ tensor::Tensor PackedModelRuntime::materializeHost(tensor::TensorView value) con
 PackedRuntimeSnapshot PackedModelRuntime::snapshot() const {
     return {impl_->memory->snapshot(), impl_->experts->stats(),
             impl_->profiler->snapshot(), impl_->history->snapshot(),
+            impl_->predictor ? impl_->predictor->qualitySnapshot()
+                             : prediction::PredictionQualitySnapshot{},
+            impl_->experts->residencySnapshot(),
             impl_->transferBackend->stats(), impl_->staticStorageBytes,
             impl_->staticExecutionBytes};
+}
+
+hypermoe::runtime::metrics::RuntimeMetricsSnapshot
+PackedModelRuntime::metrics() const {
+    const auto current = snapshot();
+    return hypermoe::runtime::metrics::collectRuntimeMetrics(
+        current.expertMemory, current.history, current.prediction,
+        current.profiler, current.residency);
 }
 
 } // namespace hypermoe::models::runtime

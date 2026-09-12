@@ -21,6 +21,7 @@ struct PredictedExpertRequest {
     LayerId layerId{};
     ExpertId expertId{};
     double confidence{};
+    double probability{};
 };
 
 class Prefetcher {

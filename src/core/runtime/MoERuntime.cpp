@@ -58,6 +58,7 @@ BatchLayerExecutionResult MoERuntime::executeBatch(
     tensor::TensorView hiddenStates,
     tensor::TensorView routerWeights) {
     std::scoped_lock executionLock(executionMutex_);
+    scheduler_->expirePrefetchesBefore(layerId);
     if (!hiddenStates || hiddenStates.shape().rank() != 2 ||
         hiddenStates.dtype() != tensor::DType::FP32 ||
         hiddenStates.device() != tensorBackend_->device()) {
@@ -73,10 +74,21 @@ BatchLayerExecutionResult MoERuntime::executeBatch(
         decision.tokens.size() != hiddenStates.shape().dimensions()[0]) {
         throw std::runtime_error("router returned an invalid batch decision");
     }
-    for (const auto& tokenDecision : decision.tokens) {
+    for (std::size_t tokenIndex = 0; tokenIndex < decision.tokens.size(); ++tokenIndex) {
+        const auto& tokenDecision = decision.tokens[tokenIndex];
         if (predictor_ && history_) {
             (void)predictor_->observeAndPrefetch(
-                tokenDecision, *history_, *scheduler_);
+                tokenDecision, *history_, *scheduler_, tokenIndex,
+                [this](const prediction::ExpertPrediction& prediction) {
+                    try {
+                        experts_.updatePrediction(prediction.expectedLayer,
+                                                  prediction.expertId,
+                                                  prediction.probability,
+                                                  prediction.confidence);
+                    } catch (const std::out_of_range&) {
+                        // Partial runtime graphs may omit predicted experts.
+                    }
+                });
         } else {
             if (history_) history_->record(tokenDecision);
             if (predictor_) predictor_->observe(tokenDecision);
@@ -285,7 +297,7 @@ BatchLayerExecutionResult MoERuntime::executeBatch(
     if (!nativeCuda) {
         tensorBackend_->copyTensor(hostCombined.view(), output.view());
     }
-    tensorBackend_->synchronize();
+    if (!nativeCuda) tensorBackend_->synchronizeExecution();
     metadata.expertCombinationTime +=
         std::chrono::steady_clock::now() - outputCopyStart;
     return {std::move(decision), std::move(batches), std::move(expertOutputs),

@@ -36,7 +36,7 @@ TransformerLayerResult MoELayer::execute(
     }
     auto output = backend_->allocateTensor(attention.shape(), tensor::DType::FP32);
     backend_->add(attention, moe.output, output);
-    backend_->synchronize();
+    backend_->synchronizeExecution();
     return {std::move(moe.routing), std::move(attention), std::move(output)};
 }
 
