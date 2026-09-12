@@ -33,6 +33,11 @@ struct ProfilerSnapshot {
     std::uint64_t prefetchRequests{};
     std::uint64_t prefetchHits{};
     std::uint64_t prefetchMisses{};
+    std::uint64_t prefetchUseful{};
+    std::uint64_t prefetchWasted{};
+    std::uint64_t prefetchSkipped{};
+    std::uint64_t prefetchLate{};
+    std::uint64_t synchronizationCount{};
     std::uint64_t queueWaitSamples{};
     std::chrono::nanoseconds totalQueueWait{};
     std::chrono::nanoseconds overlapEligibleTransferTime{};
@@ -74,6 +79,11 @@ public:
     void recordPrefetchRequest(std::uint64_t count = 1);
     void recordPrefetchHit(std::uint64_t count = 1);
     void recordPrefetchMiss(std::uint64_t count = 1);
+    void recordPrefetchUseful(std::uint64_t count = 1);
+    void recordPrefetchWasted(std::uint64_t count = 1);
+    void recordPrefetchSkipped(std::uint64_t count = 1);
+    void recordPrefetchLate(std::uint64_t count = 1);
+    void recordSynchronization(std::uint64_t count = 1);
     void recordQueueWait(std::chrono::nanoseconds duration);
     void recordTransferOverlap(std::chrono::nanoseconds eligible,
                                std::chrono::nanoseconds hidden);

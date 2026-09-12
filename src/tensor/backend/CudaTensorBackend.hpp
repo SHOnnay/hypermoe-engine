@@ -69,6 +69,7 @@ public:
     void zero(TensorView output);
     [[nodiscard]] Tensor reshape(const Tensor& tensor, Shape shape) override;
     void synchronize() override;
+    void synchronizeExecution() override;
 
 private:
     std::unique_ptr<Impl> impl_;

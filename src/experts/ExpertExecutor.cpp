@@ -92,8 +92,6 @@ void ExpertMlpExecutor::execute(tensor::TensorView input,
     projectionStart = std::chrono::steady_clock::now();
     backend_->matmul(gated, weights.downProjection, output);
     projectionTime += std::chrono::steady_clock::now() - projectionStart;
-    backend_->synchronize();
-
     if (profiler_) {
         profiler_->recordProjectionTime(projectionTime);
         profiler_->recordExpertExecutionTime(

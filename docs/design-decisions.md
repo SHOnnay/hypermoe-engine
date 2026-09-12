@@ -705,3 +705,36 @@ produce incorrect attention and logits. The layer manifest therefore carries
 an optional paired Q/K normalization binding, and both backends apply the same
 FP32 RMSNorm operation before RoPE. Older architecture fixtures without the
 pair remain valid; a partial pair is rejected.
+
+## Why probability and confidence are separate
+
+Probability answers which expert is most likely relative to candidates in one
+future layer. Confidence answers whether the predictor has enough consistent
+evidence to justify moving bytes. Conflating them causes an unobserved layer's
+uniform distribution to appear transfer-worthy. Phase 21 ranks residency by
+probability but gates prefetch I/O by confidence.
+
+## Why decay is lazy and the popularity window is bounded
+
+Sweeping every expert whenever a router decision arrives scales with total
+model size rather than active experts. A counter therefore stores its last
+observation and applies exponential decay only when updated or queried. Exact
+lifetime counters remain available for metrics, and a bounded recent window
+captures short-lived popularity changes without unbounded history memory.
+
+## Why adaptive eviction remains a cache policy
+
+Prediction should influence eviction without moving ownership into the
+predictor. `ExpertManager` forwards normalized probability and confidence to
+the existing policy interface, and `HybridPolicy` combines them with frequency
+and recency. LRU is unchanged and selectable, which gives correctness tests and
+benchmarks a stable baseline.
+
+## Why execution synchronization does not stop every CUDA stream
+
+Tensor operations for an expert and transformer block share the ordered compute
+stream. Stopping transfer and prefetch streams at every compute boundary removes
+the overlap the scheduler is intended to create. `synchronizeExecution`
+therefore waits only for the execution dependency chain on CUDA, while the
+existing full `synchronize` call remains available for shutdown, diagnostics,
+and explicit cross-stream materialization.

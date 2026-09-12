@@ -164,6 +164,11 @@ Tensor CpuTensorBackend::reshape(const Tensor& tensor, Shape shape) {
     return tensor.reshape(std::move(shape));
 }
 
-void CpuTensorBackend::synchronize() { backend_->synchronize(); }
+void CpuTensorBackend::synchronize() {
+    backend_->synchronize();
+    if (profiler_) profiler_->recordSynchronization();
+}
+
+void CpuTensorBackend::synchronizeExecution() { synchronize(); }
 
 } // namespace hypermoe::tensor

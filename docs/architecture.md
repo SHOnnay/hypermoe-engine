@@ -421,12 +421,19 @@ RAM. CUDA and CPU construct the same graph from the same manifest.
 - `ExpertPredictor` uses transition probability, frequency, recency, and
   co-occurrence. It emits ordinary predicted-next-layer scheduler requests; it is
   statistical and does not claim model-level learned routing.
+- Phase 21 predictions separate normalized next-layer probability from evidence
+  confidence. Lazy-decayed transitions, a bounded popularity window, and
+  per-stream evaluation feed confidence-gated prefetch and deterministic
+  same-priority scheduler ordering.
 - `Scheduler` retains completed prefetch transfer buffers. A subsequent demand
   request receives the exact buffer and storage record instead of observing a
   READY state whose data ownership has expired.
 - `CachePolicy` has interchangeable LRU, LFU, and hybrid implementations. The
   hybrid normalizes signals before applying 0.4 frequency, 0.3 recency,
   0.2 layer probability, and 0.1 prefetch confidence.
+- `ExpertManager` records those same score inputs per expert and exposes a
+  residency snapshot. Packed runtimes select hybrid eviction by default while
+  retaining LRU through configuration for regression and benchmark baselines.
 - `MemoryPressureController` restores configurable safety margins and monitors
   transfer-queue depth.
 - `Profiler` collects requests, transfers, evictions, pressure, CUDA/NVMe/RAM
@@ -434,6 +441,9 @@ RAM. CUDA and CPU construct the same graph from the same manifest.
   average scheduler queue wait, transfer overlap, kernel/matmul/expert/projection/
   activation/quantization time, tensor allocations, and externally supplied
   GPU-utilization observations.
+- `RuntimeMetricsSnapshot` projects memory, MoE, prediction, cache, and execution
+  counters into a stable read-only in-process interface. No presentation or
+  transport layer is coupled to runtime ownership.
 - `HardwareInfo` reports CPU, logical cores, RAM, available storage, CUDA
   build/runtime state, GPU name, VRAM, runtime version, and driver version.
 - The CMake platform gate requires C++20 library support, a 64-bit target,

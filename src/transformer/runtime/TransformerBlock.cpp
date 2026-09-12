@@ -101,7 +101,7 @@ TransformerBlockResult TransformerBlock::execute(
     auto output = backend_->allocateTensor(postAttentionInput.shape(),
                                            tensor::DType::FP32);
     backend_->add(postAttentionInput, moeResult.output, output);
-    backend_->synchronize();
+    backend_->synchronizeExecution();
     timings.residual += std::chrono::steady_clock::now() - stageStart;
     timings.total = std::chrono::steady_clock::now() - totalStart;
 

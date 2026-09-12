@@ -27,6 +27,9 @@ public:
                      TensorView output) = 0;
     [[nodiscard]] virtual Tensor reshape(const Tensor& tensor, Shape shape) = 0;
     virtual void synchronize() = 0;
+    // Completes only the execution dependency chain. Backends with independent
+    // transfer/prefetch streams may avoid a device-wide barrier here.
+    virtual void synchronizeExecution() { synchronize(); }
 };
 
 } // namespace hypermoe::tensor

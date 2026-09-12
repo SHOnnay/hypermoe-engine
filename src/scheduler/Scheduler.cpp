@@ -65,14 +65,17 @@ ScheduleHandle Scheduler::schedule(ScheduleRequest request, ScheduleCallback cal
                 initialState.currentLocation == request.destination &&
                 initialState.state == ExpertLifecycleState::Ready) {
                 profiler_->recordPrefetchHit();
+                profiler_->recordPrefetchUseful();
             } else if (existing != pendingByExpert_.end() &&
                        existing->second->prefetchRequest) {
                 if (initialState.currentLocation == request.destination &&
                     initialState.state == ExpertLifecycleState::Ready) {
                     existing->second->activeConsumer = true;
                     profiler_->recordPrefetchHit();
+                    profiler_->recordPrefetchUseful();
                 } else {
                     profiler_->recordPrefetchMiss();
+                    profiler_->recordPrefetchLate();
                 }
             }
         }
@@ -92,12 +95,19 @@ ScheduleHandle Scheduler::schedule(ScheduleRequest request, ScheduleCallback cal
             if (request.priority == TransferPriority::ActiveInference) {
                 task->activeConsumer = true;
             }
-            if (static_cast<int>(request.priority) >
-                    static_cast<int>(task->request.priority) &&
-                !task->started) {
-                task->request.priority = request.priority;
+            const auto higherPriority = static_cast<int>(request.priority) >
+                                        static_cast<int>(task->request.priority);
+            const auto betterScore = request.priority == task->request.priority &&
+                                     request.priorityScore >
+                                         task->request.priorityScore;
+            if ((higherPriority || betterScore) && !task->started) {
+                if (higherPriority) task->request.priority = request.priority;
+                task->request.priorityScore = std::max(task->request.priorityScore,
+                                                       request.priorityScore);
                 ++task->generation;
-                queue_.push({task, request.priority, nextSequence_++, task->generation});
+                queue_.push({task, task->request.priority, nextSequence_++,
+                             task->generation,
+                             task->request.priorityScore});
                 notifyWorker = true;
             }
         } else {
@@ -120,7 +130,8 @@ ScheduleHandle Scheduler::schedule(ScheduleRequest request, ScheduleCallback cal
             task->activeConsumer =
                 task->request.priority == TransferPriority::ActiveInference;
             pendingByExpert_[expertKey] = task;
-            queue_.push({task, task->request.priority, nextSequence_++, task->generation});
+            queue_.push({task, task->request.priority, nextSequence_++, task->generation,
+                         task->request.priorityScore});
             if (profiler_) profiler_->observeTransferQueueDepth(queue_.size());
             notifyWorker = true;
         }
@@ -138,6 +149,9 @@ ScheduleHandle Scheduler::prefetch(const PredictedExpertRequest& prediction,
     request.source = MemoryTier::Nvme;
     request.destination = MemoryTier::Vram;
     request.priority = TransferPriority::PredictedNextLayer;
+    request.priorityScore =
+        std::clamp(0.7 * prediction.probability + 0.3 * prediction.confidence,
+                   0.0, 1.0);
     return schedule(std::move(request), std::move(callback));
 }
 
@@ -172,6 +186,24 @@ std::size_t Scheduler::pending() const {
     return pendingByExpert_.size();
 }
 
+void Scheduler::expirePrefetchesBefore(LayerId layerId) {
+    std::uint64_t wasted{};
+    {
+        std::scoped_lock lock(mutex_);
+        for (auto current = prefetchedReady_.begin();
+             current != prefetchedReady_.end();) {
+            const auto prefetchedLayer = static_cast<LayerId>(*current >> 32U);
+            if (prefetchedLayer < layerId) {
+                current = prefetchedReady_.erase(current);
+                ++wasted;
+            } else {
+                ++current;
+            }
+        }
+    }
+    if (profiler_ && wasted != 0) profiler_->recordPrefetchWasted(wasted);
+}
+
 RuntimeEventBus& Scheduler::events() noexcept { return events_; }
 const ExpertResidencyStateMachine& Scheduler::states() const noexcept { return states_; }
 
@@ -196,6 +228,9 @@ bool Scheduler::HigherPriority::operator()(const QueueEntry& left,
                                            const QueueEntry& right) const noexcept {
     if (left.priority != right.priority) {
         return static_cast<int>(left.priority) < static_cast<int>(right.priority);
+    }
+    if (left.priorityScore != right.priorityScore) {
+        return left.priorityScore < right.priorityScore;
     }
     return left.sequence > right.sequence;
 }

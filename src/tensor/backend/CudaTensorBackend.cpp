@@ -706,6 +706,14 @@ void CudaTensorBackend::synchronize() {
         impl_->streams->stream(backend::CudaStreamRole::Transfer));
     impl_->backend->synchronize(
         impl_->streams->stream(backend::CudaStreamRole::Prefetch));
+    if (impl_->profiler) impl_->profiler->recordSynchronization();
+}
+
+void CudaTensorBackend::synchronizeExecution() {
+    if (!available()) throw std::runtime_error("CUDA tensor backend is unavailable");
+    impl_->backend->synchronize(
+        impl_->streams->stream(backend::CudaStreamRole::Compute));
+    if (impl_->profiler) impl_->profiler->recordSynchronization();
 }
 
 } // namespace hypermoe::tensor

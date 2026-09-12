@@ -7,6 +7,7 @@
 #include "prediction/ExpertHistory.hpp"
 #include "profiling/Profiler.hpp"
 #include "runtime/cache/KVCache.hpp"
+#include "runtime/metrics/RuntimeMetrics.hpp"
 #include "tensor/Tensor.hpp"
 
 #include <cstddef>
@@ -23,6 +24,9 @@ struct PackedRuntimeConfiguration {
     std::size_t expertRamBudgetBytes{2U * 1024U * 1024U * 1024U};
     std::size_t transferWorkers{2};
     std::size_t schedulerWorkers{2};
+    bool adaptivePrediction{true};
+    bool adaptiveResidency{true};
+    double minimumPrefetchConfidence{0.20};
 
     void validate() const;
 };
@@ -32,6 +36,8 @@ struct PackedRuntimeSnapshot {
     ExpertManagerStats experts;
     ProfilerSnapshot profiler;
     prediction::ExpertHistorySnapshot history;
+    prediction::PredictionQualitySnapshot prediction;
+    std::vector<ExpertResidencyInfo> residency;
     backend::BackendStats transfers;
     std::size_t staticStorageBytes{};
     std::size_t staticExecutionBytes{};
@@ -62,6 +68,7 @@ public:
     [[nodiscard]] tensor::Device device() const noexcept;
     [[nodiscard]] tensor::Tensor materializeHost(tensor::TensorView value) const;
     [[nodiscard]] PackedRuntimeSnapshot snapshot() const;
+    [[nodiscard]] hypermoe::runtime::metrics::RuntimeMetricsSnapshot metrics() const;
 
 private:
     struct Impl;

@@ -133,6 +133,31 @@ void Profiler::recordPrefetchMiss(std::uint64_t count) {
     metrics_.prefetchMisses += count;
 }
 
+void Profiler::recordPrefetchUseful(std::uint64_t count) {
+    std::scoped_lock lock(mutex_);
+    metrics_.prefetchUseful += count;
+}
+
+void Profiler::recordPrefetchWasted(std::uint64_t count) {
+    std::scoped_lock lock(mutex_);
+    metrics_.prefetchWasted += count;
+}
+
+void Profiler::recordPrefetchSkipped(std::uint64_t count) {
+    std::scoped_lock lock(mutex_);
+    metrics_.prefetchSkipped += count;
+}
+
+void Profiler::recordPrefetchLate(std::uint64_t count) {
+    std::scoped_lock lock(mutex_);
+    metrics_.prefetchLate += count;
+}
+
+void Profiler::recordSynchronization(std::uint64_t count) {
+    std::scoped_lock lock(mutex_);
+    metrics_.synchronizationCount += count;
+}
+
 void Profiler::recordQueueWait(std::chrono::nanoseconds duration) {
     std::scoped_lock lock(mutex_);
     metrics_.totalQueueWait += duration;
@@ -248,6 +273,12 @@ std::string Profiler::toJson() const {
            << "  \"prefetch_requests\": " << metrics.prefetchRequests << ",\n"
            << "  \"prefetch_hits\": " << metrics.prefetchHits << ",\n"
            << "  \"prefetch_misses\": " << metrics.prefetchMisses << ",\n"
+           << "  \"prefetch_useful\": " << metrics.prefetchUseful << ",\n"
+           << "  \"prefetch_wasted\": " << metrics.prefetchWasted << ",\n"
+           << "  \"prefetch_skipped\": " << metrics.prefetchSkipped << ",\n"
+           << "  \"prefetch_late\": " << metrics.prefetchLate << ",\n"
+           << "  \"synchronization_count\": "
+           << metrics.synchronizationCount << ",\n"
            << "  \"average_queue_wait_ms\": " << metrics.averageQueueWaitMs() << ",\n"
            << "  \"transfer_overlap_percentage\": "
            << metrics.transferOverlapPercentage() << ",\n"
