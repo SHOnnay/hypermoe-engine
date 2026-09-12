@@ -257,18 +257,20 @@ models::ModelManifest QwenImporter::inspect(
         ? requiredSize(configJson, "num_key_value_heads")
         : runtimeArchitecture.attentionHeads;
     if (const auto* headDimension = configJson.find("head_dim")) {
-        const auto value = headDimension->asUInt64();
-        if (value == 0 || value > std::numeric_limits<std::size_t>::max()) {
-            throw MetadataError("Qwen head_dim is zero or too large");
-        }
-        runtimeArchitecture.headDimension = static_cast<std::size_t>(value);
-    } else {
-        if (manifest.config.hiddenSize % runtimeArchitecture.attentionHeads != 0) {
-            throw MetadataError("Qwen hidden size is not divisible by attention heads");
-        }
-        runtimeArchitecture.headDimension =
-            manifest.config.hiddenSize / runtimeArchitecture.attentionHeads;
-    }
+                const auto value = headDimension->asUInt64();
+                if (value == 0 || value > std::numeric_limits<std::size_t>::max()) {
+                    throw MetadataError("Qwen head_dim is zero or too large");
+                }
+                // Use config's head_dim directly - Qwen3-30B uses head_dim=128 for projections
+                // (Q projection: 2048 -> 32*128=4096, matches the safetensors shape)
+                runtimeArchitecture.headDimension = static_cast<std::size_t>(value);
+            } else {
+                if (manifest.config.hiddenSize % runtimeArchitecture.attentionHeads != 0) {
+                    throw MetadataError("Qwen hidden size is not divisible by attention heads");
+                }
+                runtimeArchitecture.headDimension =
+                    manifest.config.hiddenSize / runtimeArchitecture.attentionHeads;
+            }
     if (const auto* epsilon = configJson.find("rms_norm_eps")) {
         runtimeArchitecture.inputNormalization.epsilon =
             static_cast<float>(epsilon->asDouble());
@@ -353,9 +355,9 @@ models::ModelManifest QwenImporter::inspect(
                 layer.outputProjection = std::move(binding);
             }
         } else if (parsed->kind == ParsedTensorName::Kind::AttentionNorm) {
-            if (tensor.shape != tensor::Shape{runtimeArchitecture.headDimension}) {
-                throw MetadataError("Qwen Q/K normalization tensor shape is incompatible");
-            }
+                    if (tensor.shape != tensor::Shape{configJson.require("head_dim").asUInt64()}) {
+                        throw MetadataError("Qwen Q/K normalization tensor shape is incompatible");
+                    }
             auto& layer = layerMappings[parsed->layer];
             layer.layerId = parsed->layer;
             auto& name = parsed->projection == "q_norm"
