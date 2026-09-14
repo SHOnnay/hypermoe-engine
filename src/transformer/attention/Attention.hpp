@@ -36,6 +36,7 @@ struct AttentionConfiguration {
     std::size_t headCount{1};
     std::size_t keyValueHeadCount{1};
     std::size_t headDimension{};
+    std::size_t projectionHeadDimension{};
     bool causal{};
     bool rotaryEmbedding{};
     float ropeTheta{10000.0F};

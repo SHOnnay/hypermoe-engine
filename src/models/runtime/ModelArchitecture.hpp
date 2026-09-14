@@ -26,6 +26,7 @@ struct ModelArchitecture {
     std::size_t attentionHeads{1};
     std::size_t keyValueHeads{1};
     std::size_t headDimension{};
+    std::size_t projectionHeadDimension{};
     std::size_t expertCount{};
     std::size_t topK{1};
     std::size_t vocabularySize{};

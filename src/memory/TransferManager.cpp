@@ -217,7 +217,9 @@ void TransferManager::workerLoop() {
                                       : std::chrono::nanoseconds{};
 
             if (task->request.destination == MemoryTier::Ram) {
+                // Direct Nvme->Ram or Vram->Ram without device transfer
                 if (sourceDevice) {
+                    // Vram -> Ram (device to host)
                     auto pinned = std::make_shared<PinnedBuffer>(loaded.record.size, backend_);
                     if (cudaStreams_) {
                         cudaStreamLock =
@@ -251,8 +253,10 @@ void TransferManager::workerLoop() {
                     ownsStream = false;
                     if (cudaStreamLock.owns_lock()) cudaStreamLock.unlock();
                 } else if (sourceBuffer) {
+                    // Nvme -> Ram (direct file read)
                     result.buffer = sourceBuffer;
                 } else {
+                    // Ram -> Ram (already in host memory)
                     result.buffer = std::make_shared<const std::vector<std::byte>>(
                         sourcePinned->bytes().begin(), sourcePinned->bytes().end());
                 }

@@ -52,10 +52,13 @@ private:
     friend class ExpertManager;
     ExpertResidencyLease(std::shared_ptr<std::atomic_size_t> leaseCount,
                          std::shared_ptr<backend::DeviceBuffer> buffer) noexcept;
+    ExpertResidencyLease(std::shared_ptr<std::atomic_size_t> leaseCount,
+                         std::shared_ptr<const std::vector<std::byte>> buffer) noexcept;
     void reset() noexcept;
 
     std::shared_ptr<std::atomic_size_t> leaseCount_;
-    std::shared_ptr<backend::DeviceBuffer> buffer_;
+    std::shared_ptr<backend::DeviceBuffer> deviceBuffer_;
+    std::shared_ptr<const std::vector<std::byte>> hostBuffer_;
 };
 
 enum class RequestSource {
@@ -153,8 +156,10 @@ public:
                           ExpertId id,
                           std::shared_ptr<const std::vector<std::byte>> buffer);
     [[nodiscard]] ExpertResidencyLease acquireResidentExpert(
-        LayerId layerId, ExpertId id);
-    [[nodiscard]] std::size_t expertCount() const;
+            LayerId layerId, ExpertId id);
+        [[nodiscard]] ExpertResidencyLease acquireHostExpert(
+            LayerId layerId, ExpertId id);
+        [[nodiscard]] std::size_t expertCount() const;
     [[nodiscard]] ExpertManagerStats stats() const;
     void updatePrediction(LayerId layerId,
                           ExpertId id,

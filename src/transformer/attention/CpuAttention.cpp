@@ -113,9 +113,9 @@ AttentionResult CpuAttention::execute(
         configuration.headDimension = queryShape[1] / configuration.headCount;
     }
     const auto queryWidth = checkedWidth(configuration.headCount,
-                                         configuration.headDimension);
-    const auto keyValueWidth = checkedWidth(configuration.keyValueHeadCount,
-                                            configuration.headDimension);
+                                             configuration.projectionHeadDimension);
+        const auto keyValueWidth = checkedWidth(configuration.keyValueHeadCount,
+                                                configuration.projectionHeadDimension);
     if (configuration.headCount % configuration.keyValueHeadCount != 0 ||
         queryShape[0] != hiddenShape[1] || keyShape[0] != hiddenShape[1] ||
         valueShape[0] != hiddenShape[1] || queryShape[1] != queryWidth ||
@@ -154,27 +154,27 @@ AttentionResult CpuAttention::execute(
                 "attention received expired Q/K normalization storage");
         }
         applyHeadRmsNorm(result.query, weights.queryNorm, tokenCount,
-                         configuration.headCount, configuration.headDimension,
-                         configuration.queryKeyNormEpsilon);
-        applyHeadRmsNorm(result.key, weights.keyNorm, tokenCount,
-                         configuration.keyValueHeadCount,
-                         configuration.headDimension,
-                         configuration.queryKeyNormEpsilon);
+                                 configuration.headCount, configuration.projectionHeadDimension,
+                                 configuration.queryKeyNormEpsilon);
+                applyHeadRmsNorm(result.key, weights.keyNorm, tokenCount,
+                                 configuration.keyValueHeadCount,
+                                 configuration.projectionHeadDimension,
+                                 configuration.queryKeyNormEpsilon);
     }
 
     if (configuration.rotaryEmbedding) {
-        position::RoPE rope(configuration.ropeTheta);
-        rope.apply({static_cast<float*>(result.query.data()),
-                    result.query.shape().elementCount()},
-                   tokenCount, configuration.headCount,
-                   configuration.headDimension,
-                   static_cast<std::size_t>(configuration.positionOffset));
-        rope.apply({static_cast<float*>(result.key.data()),
-                    result.key.shape().elementCount()},
-                   tokenCount, configuration.keyValueHeadCount,
-                   configuration.headDimension,
-                   static_cast<std::size_t>(configuration.positionOffset));
-    }
+            position::RoPE rope(configuration.ropeTheta);
+            rope.apply({static_cast<float*>(result.query.data()),
+                        result.query.shape().elementCount()},
+                       tokenCount, configuration.headCount,
+                       configuration.headDimension,
+                       static_cast<std::size_t>(configuration.positionOffset));
+            rope.apply({static_cast<float*>(result.key.data()),
+                        result.key.shape().elementCount()},
+                       tokenCount, configuration.keyValueHeadCount,
+                       configuration.headDimension,
+                       static_cast<std::size_t>(configuration.positionOffset));
+            }
 
     hypermoe::runtime::cache::KVCacheSnapshot cached;
     if (configuration.kvCache) {

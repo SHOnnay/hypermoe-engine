@@ -102,16 +102,17 @@ TransformerModelRuntime::TransformerModelRuntime(
                 "runtime transformer projections must use INPUT_OUTPUT layout");
         }
         transformer::attention::AttentionConfiguration attentionConfiguration;
-        attentionConfiguration.headCount = architecture_.attentionHeads;
-        attentionConfiguration.keyValueHeadCount = architecture_.keyValueHeads;
-        attentionConfiguration.headDimension = architecture_.headDimension;
-        attentionConfiguration.causal = true;
-        attentionConfiguration.rotaryEmbedding = true;
-        attentionConfiguration.ropeTheta = architecture_.ropeTheta;
-        attentionConfiguration.queryKeyNormEpsilon =
-            architecture_.inputNormalization.epsilon;
-        attentionConfiguration.layerIndex = static_cast<std::uint32_t>(layerId);
-        attentionConfiguration.kvCache = kvCache_.get();
+                attentionConfiguration.headCount = architecture_.attentionHeads;
+                attentionConfiguration.keyValueHeadCount = architecture_.keyValueHeads;
+                attentionConfiguration.headDimension = architecture_.headDimension;
+                attentionConfiguration.projectionHeadDimension = architecture_.projectionHeadDimension;
+                attentionConfiguration.causal = true;
+                attentionConfiguration.rotaryEmbedding = true;
+                attentionConfiguration.ropeTheta = architecture_.ropeTheta;
+                attentionConfiguration.queryKeyNormEpsilon =
+                    architecture_.inputNormalization.epsilon;
+                attentionConfiguration.layerIndex = static_cast<std::uint32_t>(layerId);
+                attentionConfiguration.kvCache = kvCache_.get();
         if (mapping->queryNormTensor.empty() != mapping->keyNormTensor.empty()) {
             throw std::invalid_argument(
                 "transformer layer must bind both query and key normalization weights");

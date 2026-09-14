@@ -71,34 +71,35 @@ AttentionResult CudaAttention::execute(
             throw std::invalid_argument("CUDA attention requires device FP32 matrices");
         }
         auto headDimension = configuration.headDimension;
-        const auto& hiddenShape = hiddenStates.shape().dimensions();
-        const auto& queryShape = weights.query.shape().dimensions();
-        const auto& keyShape = weights.key.shape().dimensions();
-        const auto& valueShape = weights.value.shape().dimensions();
-        const auto& outputShape = weights.output.shape().dimensions();
-        if (headDimension == 0) {
-            if (configuration.headCount == 0 ||
-                queryShape[1] % configuration.headCount != 0) {
-                throw std::invalid_argument("CUDA attention cannot infer head dimension");
-            }
-            headDimension = queryShape[1] / configuration.headCount;
-        }
-        if (configuration.headCount == 0 || configuration.keyValueHeadCount == 0 ||
-            headDimension == 0 || configuration.headCount % configuration.keyValueHeadCount != 0 ||
-            configuration.headCount > std::numeric_limits<std::size_t>::max() / headDimension ||
-            configuration.keyValueHeadCount > std::numeric_limits<std::size_t>::max() / headDimension) {
-            throw std::invalid_argument("CUDA attention head configuration is invalid");
-        }
-        const auto queryWidth = configuration.headCount * headDimension;
-        const auto keyValueWidth = configuration.keyValueHeadCount * headDimension;
-        if (queryShape != std::vector<std::size_t>{hiddenShape[1], queryWidth} ||
-            keyShape != std::vector<std::size_t>{hiddenShape[1], keyValueWidth} ||
-            valueShape != keyShape ||
-            outputShape != std::vector<std::size_t>{queryWidth, hiddenShape[1]} ||
-            !std::isfinite(configuration.ropeTheta) || configuration.ropeTheta <= 0.0F ||
-            configuration.positionOffset > std::numeric_limits<std::size_t>::max()) {
-            throw std::invalid_argument("CUDA attention projections are incompatible");
-        }
+                const auto projectionHeadDimension = configuration.projectionHeadDimension;
+                const auto& hiddenShape = hiddenStates.shape().dimensions();
+                const auto& queryShape = weights.query.shape().dimensions();
+                const auto& keyShape = weights.key.shape().dimensions();
+                const auto& valueShape = weights.value.shape().dimensions();
+                const auto& outputShape = weights.output.shape().dimensions();
+                if (headDimension == 0) {
+                    if (configuration.headCount == 0 ||
+                        queryShape[1] % configuration.headCount != 0) {
+                        throw std::invalid_argument("CUDA attention cannot infer head dimension");
+                    }
+                    headDimension = queryShape[1] / configuration.headCount;
+                }
+                if (configuration.headCount == 0 || configuration.keyValueHeadCount == 0 ||
+                    headDimension == 0 || configuration.headCount % configuration.keyValueHeadCount != 0 ||
+                    configuration.headCount > std::numeric_limits<std::size_t>::max() / headDimension ||
+                    configuration.keyValueHeadCount > std::numeric_limits<std::size_t>::max() / headDimension) {
+                    throw std::invalid_argument("CUDA attention head configuration is invalid");
+                }
+                const auto queryWidth = configuration.headCount * configuration.projectionHeadDimension;
+                const auto keyValueWidth = configuration.keyValueHeadCount * configuration.projectionHeadDimension;
+                if (queryShape != std::vector<std::size_t>{hiddenShape[1], queryWidth} ||
+                    keyShape != std::vector<std::size_t>{hiddenShape[1], keyValueWidth} ||
+                    valueShape != keyShape ||
+                    outputShape != std::vector<std::size_t>{queryWidth, hiddenShape[1]} ||
+                    !std::isfinite(configuration.ropeTheta) || configuration.ropeTheta <= 0.0F ||
+                    configuration.positionOffset > std::numeric_limits<std::size_t>::max()) {
+                    throw std::invalid_argument("CUDA attention projections are incompatible");
+                }
         const auto tokenCount = hiddenShape[0];
         AttentionResult result;
         result.query = backend_->allocateTensor({tokenCount, queryWidth}, tensor::DType::FP32);
@@ -113,13 +114,13 @@ AttentionResult CudaAttention::execute(
                 "CUDA attention requires both query and key normalization weights");
         }
         if (weights.queryNorm) {
-            const auto normWeight = [&](tensor::TensorView value,
-                                        const std::shared_ptr<void>& owner) {
-                return owner && value.device() == device() &&
-                       value.dtype() == tensor::DType::FP32 &&
-                       value.isContiguous() &&
-                       value.shape() == tensor::Shape{headDimension};
-            };
+                    const auto normWeight = [&](tensor::TensorView value,
+                                                const std::shared_ptr<void>& owner) {
+                        return owner && value.device() == device() &&
+                               value.dtype() == tensor::DType::FP32 &&
+                               value.isContiguous() &&
+                               value.shape() == tensor::Shape{configuration.projectionHeadDimension};
+                    };
             if (!normWeight(weights.queryNorm, queryNormOwner) ||
                 !normWeight(weights.keyNorm, keyNormOwner) ||
                 !std::isfinite(configuration.queryKeyNormEpsilon) ||
@@ -128,35 +129,35 @@ AttentionResult CudaAttention::execute(
                     "CUDA attention Q/K normalization is incompatible");
             }
             auto normalizedQuery = backend_->allocateTensor(
-                result.query.shape(), tensor::DType::FP32);
-            auto normalizedKey = backend_->allocateTensor(
-                result.key.shape(), tensor::DType::FP32);
-            cuda->rmsNorm(
-                result.query.view().reshape(
-                    {tokenCount * configuration.headCount, headDimension}),
-                weights.queryNorm,
-                normalizedQuery.view().reshape(
-                    {tokenCount * configuration.headCount, headDimension}),
-                configuration.queryKeyNormEpsilon);
-            cuda->rmsNorm(
-                result.key.view().reshape(
-                    {tokenCount * configuration.keyValueHeadCount, headDimension}),
-                weights.keyNorm,
-                normalizedKey.view().reshape(
-                    {tokenCount * configuration.keyValueHeadCount, headDimension}),
-                configuration.queryKeyNormEpsilon);
-            result.query = std::move(normalizedQuery);
-            result.key = std::move(normalizedKey);
-        }
-        if (configuration.rotaryEmbedding) {
-            cuda->applyRoPE(result.query.view(), tokenCount, configuration.headCount,
-                            headDimension,
-                            static_cast<std::size_t>(configuration.positionOffset),
-                            configuration.ropeTheta);
-            cuda->applyRoPE(result.key.view(), tokenCount,
-                            configuration.keyValueHeadCount, headDimension,
-                            static_cast<std::size_t>(configuration.positionOffset),
-                            configuration.ropeTheta);
+                            result.query.shape(), tensor::DType::FP32);
+                        auto normalizedKey = backend_->allocateTensor(
+                            result.key.shape(), tensor::DType::FP32);
+                        cuda->rmsNorm(
+                            result.query.view().reshape(
+                                {tokenCount * configuration.headCount, configuration.projectionHeadDimension}),
+                            weights.queryNorm,
+                            normalizedQuery.view().reshape(
+                                {tokenCount * configuration.headCount, configuration.projectionHeadDimension}),
+                            configuration.queryKeyNormEpsilon);
+                        cuda->rmsNorm(
+                            result.key.view().reshape(
+                                {tokenCount * configuration.keyValueHeadCount, configuration.projectionHeadDimension}),
+                            weights.keyNorm,
+                            normalizedKey.view().reshape(
+                                {tokenCount * configuration.keyValueHeadCount, configuration.projectionHeadDimension}),
+                            configuration.queryKeyNormEpsilon);
+                        result.query = std::move(normalizedQuery);
+                        result.key = std::move(normalizedKey);
+                    }
+                    if (configuration.rotaryEmbedding) {
+                        cuda->applyRoPE(result.query.view(), tokenCount, configuration.headCount,
+                                        headDimension,
+                                        static_cast<std::size_t>(configuration.positionOffset),
+                                        configuration.ropeTheta);
+                        cuda->applyRoPE(result.key.view(), tokenCount,
+                                        configuration.keyValueHeadCount, headDimension,
+                                        static_cast<std::size_t>(configuration.positionOffset),
+                                        configuration.ropeTheta);
         }
 
         hypermoe::runtime::cache::CudaKVDeviceSnapshot cached;

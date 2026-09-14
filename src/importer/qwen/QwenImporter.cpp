@@ -261,15 +261,20 @@ models::ModelManifest QwenImporter::inspect(
                 if (value == 0 || value > std::numeric_limits<std::size_t>::max()) {
                     throw MetadataError("Qwen head_dim is zero or too large");
                 }
-                // Use config's head_dim directly - Qwen3-30B uses head_dim=128 for projections
-                // (Q projection: 2048 -> 32*128=4096, matches the safetensors shape)
+                // Qwen3 uses head_dim in config for BOTH projection output dimension AND attention head dimension
+                // Q projection: hidden_size -> num_heads * head_dim (e.g., 2048 -> 32*128=4096)
+                // K/V projection: hidden_size -> num_kv_heads * head_dim (e.g., 2048 -> 4*128=512)
+                // Attention head dimension = config head_dim = 128
+                // This is a "wide attention" design where num_heads * head_dim != hidden_size
                 runtimeArchitecture.headDimension = static_cast<std::size_t>(value);
+                runtimeArchitecture.projectionHeadDimension = static_cast<std::size_t>(value);
             } else {
                 if (manifest.config.hiddenSize % runtimeArchitecture.attentionHeads != 0) {
                     throw MetadataError("Qwen hidden size is not divisible by attention heads");
                 }
-                runtimeArchitecture.headDimension =
-                    manifest.config.hiddenSize / runtimeArchitecture.attentionHeads;
+                const auto actualHeadDim = manifest.config.hiddenSize / runtimeArchitecture.attentionHeads;
+                runtimeArchitecture.headDimension = actualHeadDim;
+                runtimeArchitecture.projectionHeadDimension = actualHeadDim;
             }
     if (const auto* epsilon = configJson.find("rms_norm_eps")) {
         runtimeArchitecture.inputNormalization.epsilon =

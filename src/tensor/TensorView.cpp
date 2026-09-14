@@ -64,6 +64,21 @@ TensorView TensorView::fromDeviceBuffer(
             buffer->size(), owner};
 }
 
+TensorView TensorView::fromHostBuffer(
+    const Shape& shape,
+    DType dtype,
+    const std::shared_ptr<const std::vector<std::byte>>& buffer,
+    bool writable) {
+    if (!buffer || buffer->empty()) throw TensorError("tensor view host buffer is empty");
+    validateDevice(Device::cpu());
+    // Alias the buffer's ownership: the view must not own (and later delete)
+    // the vector itself — that double-frees the lease's buffer (heap corruption).
+    auto owner = std::shared_ptr<void>(buffer, const_cast<std::byte*>(buffer->data()));
+    std::weak_ptr<void> lifetime(owner);
+    void* mutableData = writable ? const_cast<std::byte*>(buffer->data()) : nullptr;
+    return {shape, dtype, Device::cpu(), buffer->data(), mutableData, buffer->size(), lifetime};
+}
+
 TensorView::TensorView(Shape shape,
                        DType dtype,
                        Device device,

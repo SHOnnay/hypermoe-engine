@@ -17,11 +17,17 @@ public:
     TensorView(Tensor&&) = delete;
 
     [[nodiscard]] static TensorView
-    fromDeviceBuffer(const Shape& shape,
-                     DType dtype,
-                     Device device,
-                     const std::shared_ptr<backend::DeviceBuffer>& buffer,
-                     bool writable = true);
+        fromDeviceBuffer(const Shape& shape,
+                         DType dtype,
+                         Device device,
+                         const std::shared_ptr<backend::DeviceBuffer>& buffer,
+                         bool writable = true);
+
+        [[nodiscard]] static TensorView
+        fromHostBuffer(const Shape& shape,
+                       DType dtype,
+                       const std::shared_ptr<const std::vector<std::byte>>& buffer,
+                       bool writable = true);
 
     [[nodiscard]] const Shape& shape() const noexcept;
     [[nodiscard]] DType dtype() const noexcept;

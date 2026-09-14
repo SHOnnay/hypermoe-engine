@@ -34,50 +34,68 @@ double pcieLatency(std::size_t bytes) {
 ExpertResidencyLease::ExpertResidencyLease(
     std::shared_ptr<std::atomic_size_t> leaseCount,
     std::shared_ptr<backend::DeviceBuffer> buffer) noexcept
-    : leaseCount_(std::move(leaseCount)), buffer_(std::move(buffer)) {}
+    : leaseCount_(std::move(leaseCount)), deviceBuffer_(std::move(buffer)) {}
+
+ExpertResidencyLease::ExpertResidencyLease(
+    std::shared_ptr<std::atomic_size_t> leaseCount,
+    std::shared_ptr<const std::vector<std::byte>> buffer) noexcept
+    : leaseCount_(std::move(leaseCount)), hostBuffer_(std::move(buffer)) {}
 
 ExpertResidencyLease::~ExpertResidencyLease() { reset(); }
 
 ExpertResidencyLease::ExpertResidencyLease(ExpertResidencyLease&& other) noexcept
     : leaseCount_(std::move(other.leaseCount_)),
-      buffer_(std::move(other.buffer_)) {}
+      deviceBuffer_(std::move(other.deviceBuffer_)),
+      hostBuffer_(std::move(other.hostBuffer_)) {}
 
 ExpertResidencyLease& ExpertResidencyLease::operator=(
     ExpertResidencyLease&& other) noexcept {
     if (this != &other) {
         reset();
         leaseCount_ = std::move(other.leaseCount_);
-        buffer_ = std::move(other.buffer_);
+        deviceBuffer_ = std::move(other.deviceBuffer_);
+        hostBuffer_ = std::move(other.hostBuffer_);
     }
     return *this;
 }
 
 ExpertResidencyLease::operator bool() const noexcept {
-    return leaseCount_ && buffer_ && *buffer_;
+    return leaseCount_ && (deviceBuffer_ || hostBuffer_) &&
+           (deviceBuffer_ ? deviceBuffer_.operator bool() : hostBuffer_.operator bool());
 }
 
 std::shared_ptr<backend::DeviceBuffer>
-ExpertResidencyLease::buffer() const noexcept { return buffer_; }
+ExpertResidencyLease::buffer() const noexcept { return deviceBuffer_; }
 
 tensor::TensorView ExpertResidencyLease::view(
     const tensor::Shape& shape, tensor::DType dtype) const {
     if (!*this) throw std::logic_error("expert residency lease is empty");
     const auto elementBytes = tensor::sizeOf(dtype);
-    if (elementBytes == 0 ||
-        shape.storageElementCount() > buffer_->size() / elementBytes ||
-        shape.storageElementCount() * elementBytes != buffer_->size()) {
-        throw std::invalid_argument("tensor view metadata does not match expert weight bytes");
-    }
-    const auto device = buffer_->backend()->kind() == backend::BackendKind::Cuda
-                            ? tensor::Device::cuda(buffer_->backend()->deviceOrdinal())
-                            : tensor::Device::cpu();
-    return tensor::TensorView::fromDeviceBuffer(shape, dtype, device, buffer_, false);
+    if (deviceBuffer_) {
+        const auto buffer = deviceBuffer_;
+        if (elementBytes == 0 ||
+            shape.storageElementCount() > buffer->size() / elementBytes ||
+            shape.storageElementCount() * elementBytes != buffer->size()) {
+            throw std::invalid_argument("tensor view metadata does not match expert weight bytes");
+        }
+        const auto device = tensor::Device::cuda(deviceBuffer_->backend()->deviceOrdinal());
+        return tensor::TensorView::fromDeviceBuffer(shape, dtype, device, buffer, false);
+    } else {
+            const auto buffer = hostBuffer_;
+            if (elementBytes == 0 ||
+                shape.storageElementCount() > buffer->size() / elementBytes ||
+                shape.storageElementCount() * elementBytes != buffer->size()) {
+                throw std::invalid_argument("tensor view metadata does not match expert weight bytes");
+            }
+            return tensor::TensorView::fromHostBuffer(shape, dtype, buffer, false);
+        }
 }
 
 void ExpertResidencyLease::reset() noexcept {
     if (leaseCount_) (void)leaseCount_->fetch_sub(1, std::memory_order_acq_rel);
     leaseCount_.reset();
-    buffer_.reset();
+    deviceBuffer_.reset();
+    hostBuffer_.reset();
 }
 
 double ExpertManagerStats::vramHitRate() const noexcept {
@@ -481,10 +499,34 @@ ExpertResidencyLease ExpertManager::acquireResidentExpert(
     std::scoped_lock lock(mutex_);
     auto& managed = requireExpertLocked(layerId, id);
     if (managed.metadata.location != MemoryTier::Vram || !managed.deviceWeights) {
+        // A concurrent adoption's makeRoom call may have demoted this expert
+        // between its transfer and this lease request; promote it back instead
+        // of failing the batch.
+        moveExpertLocked(layerId, id, MemoryTier::Vram, {managed.policyId});
+    }
+    if (managed.metadata.location != MemoryTier::Vram || !managed.deviceWeights) {
         throw std::logic_error("expert does not own a resident device buffer");
     }
     managed.residencyLeases->fetch_add(1, std::memory_order_acq_rel);
     return ExpertResidencyLease(managed.residencyLeases, managed.deviceWeights);
+}
+
+ExpertResidencyLease ExpertManager::acquireHostExpert(
+    LayerId layerId, ExpertId id) {
+    std::scoped_lock lock(mutex_);
+    auto& managed = requireExpertLocked(layerId, id);
+    if (managed.metadata.location == MemoryTier::Nvme) {
+        moveExpertLocked(layerId, id, MemoryTier::Ram, {managed.policyId});
+    } else if (managed.metadata.location == MemoryTier::Vram) {
+        // Scheduler promoted the expert to VRAM; demote back to RAM for the
+        // CPU execution path instead of failing the request.
+        moveExpertLocked(layerId, id, MemoryTier::Ram, {managed.policyId});
+    }
+    if (managed.metadata.location != MemoryTier::Ram || !managed.weights) {
+        throw std::logic_error("expert does not own a resident host buffer");
+    }
+    managed.residencyLeases->fetch_add(1, std::memory_order_acq_rel);
+    return ExpertResidencyLease(managed.residencyLeases, managed.weights);
 }
 
 std::size_t ExpertManager::expertCount() const {
@@ -587,12 +629,48 @@ void ExpertManager::moveExpertLocked(LayerId layerId,
     }
 
     // All cold loads stage through RAM; the DiskStore implementation will make
-    // this an actual asynchronous range read in Phase 2.
-    if (source == MemoryTier::Nvme && destination == MemoryTier::Vram) {
-        moveExpertLocked(layerId, id, MemoryTier::Ram, pinned);
-        moveExpertLocked(layerId, id, MemoryTier::Vram, pinned);
-        return;
-    }
+        // this an actual asynchronous range read in Phase 2.
+        if (source == MemoryTier::Nvme && destination == MemoryTier::Vram) {
+            moveExpertLocked(layerId, id, MemoryTier::Ram, pinned);
+            moveExpertLocked(layerId, id, MemoryTier::Vram, pinned);
+            return;
+        }
+    
+        // Direct Nvme->Ram for CPU path (requires the transfer system; without
+        // it the legacy fall-through below preserves synthetic-test behavior)
+                if (source == MemoryTier::Nvme && destination == MemoryTier::Ram && transfers_) {
+                    makeRoomLocked(destination, managed.metadata.sizeBytes, pinned);
+                    auto allocation = memory_.allocate(
+                        destination, managed.metadata.sizeBytes,
+                        "expert:" + std::to_string(layerId) + ":" + std::to_string(id));
+                    if (!allocation) {
+                        throw std::runtime_error("memory reservation failed after eviction");
+                    }
+                    TransferRequest request;
+                    request.layerId = managed.metadata.layer;
+                    request.expertId = id;
+                    request.destination = MemoryTier::Ram;
+                    auto handle = transfers_->submit(std::move(request));
+                    auto loaded = handle.future().get();
+                    if (loaded.status != TransferStatus::Completed || !loaded.buffer) {
+                        (void)memory_.release(allocation->id);
+                        throw std::runtime_error("expert disk transfer was cancelled");
+                    }
+                    if (loaded.buffer->size() != managed.metadata.sizeBytes) {
+                        (void)memory_.release(allocation->id);
+                        throw std::runtime_error("expert index size does not match registered metadata");
+                    }
+                    if (managed.allocation && !memory_.release(managed.allocation->id)) {
+                        (void)memory_.release(allocation->id);
+                        throw std::logic_error("expert owns an unknown source allocation");
+                    }
+                    managed.allocation = std::move(allocation);
+                    managed.weights = std::move(loaded.buffer);
+                    managed.deviceWeights.reset();
+                    managed.metadata.location = MemoryTier::Ram;
+                    policy_->onResident(managed.policyId, MemoryTier::Ram);
+                    return;
+                }
 
     if (destination == MemoryTier::Nvme) {
         if (managed.allocation && !memory_.release(managed.allocation->id)) {

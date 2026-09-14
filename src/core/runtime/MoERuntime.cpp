@@ -217,11 +217,20 @@ BatchLayerExecutionResult MoERuntime::executeBatch(
             throw std::logic_error("selected expert metadata disappeared");
         }
         scheduler_->acquire(layerId, expertId);
-        try {
-            const auto expertStart = std::chrono::steady_clock::now();
-            auto residency = experts_.acquireResidentExpert(layerId, expertId);
-            const auto payload = residency.view(
-                tensor::Shape{expert->sizeBytes}, tensor::DType::INT8);
+                try {
+                    const auto expertStart = std::chrono::steady_clock::now();
+                    ExpertResidencyLease residency;
+                    const auto payload = [&]() -> tensor::TensorView {
+                        if (nativeCuda) {
+                            auto residency = experts_.acquireResidentExpert(layerId, expertId);
+                            return residency.view(
+                                tensor::Shape{expert->sizeBytes}, tensor::DType::INT8);
+                        } else {
+                            auto residency = experts_.acquireHostExpert(layerId, expertId);
+                            return residency.view(
+                                tensor::Shape{expert->sizeBytes}, tensor::DType::INT8);
+                        }
+                    }();
             const auto weights = weightMap_.createViews(
                 layerId, expertId, payload, payloadOffsets[index]);
             std::array<tensor::Tensor, 3> converted;

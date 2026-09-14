@@ -191,10 +191,11 @@ void testQueryKeyNormalization() {
     auto queryNorm = make({2}, normValues);
     auto keyNorm = make({2}, normValues);
     transformer::attention::AttentionConfiguration configuration;
-    configuration.headCount = 1;
-    configuration.keyValueHeadCount = 1;
-    configuration.headDimension = 2;
-    configuration.queryKeyNormEpsilon = 1.0e-6F;
+        configuration.headCount = 1;
+        configuration.keyValueHeadCount = 1;
+        configuration.headDimension = 2;
+        configuration.projectionHeadDimension = 2;
+        configuration.queryKeyNormEpsilon = 1.0e-6F;
     const auto result = transformer::attention::CpuAttention{backend}.execute(
         hidden.view(),
         {query.view(), key.view(), value.view(), output.view(),

@@ -188,7 +188,7 @@ void runCudaTests() {
         gateHost.view(), gateHost.view(), gateHost.view(), gateHost.view()};
     const transformer::attention::AttentionWeights cudaWeights{
         gate.view(), gate.view(), gate.view(), gate.view()};
-    const transformer::attention::AttentionConfiguration config{1, 1, 2, true};
+    const transformer::attention::AttentionConfiguration config{1, 1, 2, 2, true};
     auto cpuAttentionResult = cpuAttention.execute(leftHost.view(), cpuWeights, config);
     auto cudaAttentionResult = cudaAttention.execute(left.view(), cudaWeights, config);
     const auto* expected = static_cast<const float*>(cpuAttentionResult.output.data());

@@ -44,7 +44,16 @@ std::string escapeJson(std::string_view value) {
 }
 
 std::size_t asSize(const JsonValue& value, std::string_view field) {
-    const auto number = value.asUInt64();
+    std::uint64_t number;
+    if (value.isString()) {
+        const auto& text = value.asString();
+        const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), number);
+        if (error != std::errc{} || end != text.data() + text.size()) {
+            throw MetadataError(std::string(field) + " is not an unsigned integer");
+        }
+    } else {
+        number = value.asUInt64();
+    }
     if (number > std::numeric_limits<std::size_t>::max()) {
         throw MetadataError(std::string(field) + " exceeds size_t");
     }
@@ -305,8 +314,8 @@ void ModelManifest::validate() const {
                     "transformer projection shape and layout are incompatible");
             }
         };
-        const auto queryWidth = runtime.attentionHeads * runtime.headDimension;
-        const auto keyValueWidth = runtime.keyValueHeads * runtime.headDimension;
+        const auto queryWidth = runtime.attentionHeads * runtime.projectionHeadDimension;
+                const auto keyValueWidth = runtime.keyValueHeads * runtime.projectionHeadDimension;
         for (const auto& layer : layers) {
             if (layer.layerId >= runtime.layerCount ||
                 !mappedLayers.insert(layer.layerId).second) {
@@ -329,8 +338,8 @@ void ModelManifest::validate() const {
                 const auto queryNorm = byName.find(layer.queryNormTensor);
                 const auto keyNorm = byName.find(layer.keyNormTensor);
                 if (queryNorm == byName.end() || keyNorm == byName.end() ||
-                    queryNorm->second->shape != tensor::Shape{runtime.headDimension} ||
-                    keyNorm->second->shape != tensor::Shape{runtime.headDimension}) {
+                                    queryNorm->second->shape != tensor::Shape{runtime.projectionHeadDimension} ||
+                                    keyNorm->second->shape != tensor::Shape{runtime.projectionHeadDimension}) {
                     throw std::invalid_argument(
                         "transformer Q/K normalization mapping is incompatible");
                 }
@@ -439,22 +448,23 @@ std::string ModelManifest::toJson() const {
            << (config.capabilities.quantizedExpertWeights ? "true" : "false")
            << "},\n";
     if (runtimeArchitecture) {
-        output << "  \"runtime_architecture\": {\"attention_heads\":"
-               << runtimeArchitecture->attentionHeads
-               << ",\"key_value_heads\":" << runtimeArchitecture->keyValueHeads
-               << ",\"head_dimension\":" << runtimeArchitecture->headDimension
-               << ",\"vocabulary_size\":" << runtimeArchitecture->vocabularySize
-               << ",\"tied_embeddings\":"
-               << (runtimeArchitecture->tiedEmbeddings ? "true" : "false")
-               << ",\"rope_theta\":" << runtimeArchitecture->ropeTheta
-               << ",\"input_norm_epsilon\":"
-               << runtimeArchitecture->inputNormalization.epsilon
-               << ",\"post_attention_norm_epsilon\":"
-               << runtimeArchitecture->postAttentionNormalization.epsilon
-               << ",\"final_norm_epsilon\":"
-               << runtimeArchitecture->finalNormalization.epsilon
-               << "},\n";
-    }
+            output << "  \"runtime_architecture\": {\"attention_heads\":"
+                   << runtimeArchitecture->attentionHeads
+                   << ",\"key_value_heads\":\"" << runtimeArchitecture->keyValueHeads
+                   << "\",\"head_dimension\":\"" << runtimeArchitecture->headDimension
+                   << "\",\"projection_head_dimension\":\"" << runtimeArchitecture->projectionHeadDimension
+                   << "\",\"vocabulary_size\":\"" << runtimeArchitecture->vocabularySize
+                   << "\",\"tied_embeddings\":\""
+                   << (runtimeArchitecture->tiedEmbeddings ? "true" : "false")
+                   << "\",\"rope_theta\":\"" << runtimeArchitecture->ropeTheta
+                   << "\",\"input_norm_epsilon\":\""
+                   << runtimeArchitecture->inputNormalization.epsilon
+                   << "\",\"post_attention_norm_epsilon\":\""
+                   << runtimeArchitecture->postAttentionNormalization.epsilon
+                   << "\",\"final_norm_epsilon\":\""
+                   << runtimeArchitecture->finalNormalization.epsilon
+                   << "\"},\n";
+        }
     if (modelIO) {
         output << "  \"model_io\": {\"token_embedding\":\""
                << escapeJson(modelIO->tokenEmbeddingTensor)
@@ -571,16 +581,21 @@ ModelManifest ModelManifest::load(const std::filesystem::path& path) {
         routerValue.require("renormalize_selected").asBool();
     result.router.layout = parseLayout(routerValue.require("layout").asString());
     if (const auto* runtimeValue = root.find("runtime_architecture")) {
-        runtime::ModelArchitecture architecture;
-        architecture.layerCount = result.config.layerCount;
-        architecture.hiddenDimension = result.config.hiddenSize;
-        architecture.attentionHeads = asSize(
-            runtimeValue->require("attention_heads"), "attention_heads");
-        architecture.keyValueHeads = asSize(
-            runtimeValue->require("key_value_heads"), "key_value_heads");
-        architecture.headDimension = asSize(
-            runtimeValue->require("head_dimension"), "head_dimension");
-        if (const auto* vocabularySize = runtimeValue->find("vocabulary_size")) {
+            runtime::ModelArchitecture architecture;
+            architecture.layerCount = result.config.layerCount;
+            architecture.hiddenDimension = result.config.hiddenSize;
+            architecture.attentionHeads = asSize(
+                runtimeValue->require("attention_heads"), "attention_heads");
+            architecture.keyValueHeads = asSize(
+                runtimeValue->require("key_value_heads"), "key_value_heads");
+            architecture.headDimension = asSize(
+                runtimeValue->require("head_dimension"), "head_dimension");
+            if (const auto* projectionHeadDim = runtimeValue->find("projection_head_dimension")) {
+                architecture.projectionHeadDimension = asSize(*projectionHeadDim, "projection_head_dimension");
+            } else {
+                architecture.projectionHeadDimension = architecture.headDimension;
+            }
+            if (const auto* vocabularySize = runtimeValue->find("vocabulary_size")) {
             architecture.vocabularySize = asSize(*vocabularySize, "vocabulary_size");
         }
         if (const auto* tied = runtimeValue->find("tied_embeddings")) {

@@ -240,24 +240,50 @@ bool JsonValue::isNumber() const noexcept { return std::holds_alternative<JsonNu
 bool JsonValue::isString() const noexcept { return std::holds_alternative<std::string>(value_); }
 bool JsonValue::isArray() const noexcept { return std::holds_alternative<Array>(value_); }
 bool JsonValue::isObject() const noexcept { return std::holds_alternative<Object>(value_); }
-bool JsonValue::asBool() const { return requireType<bool>(value_, "a boolean"); }
-
-double JsonValue::asDouble() const {
-    const auto& text = requireType<JsonNumber>(value_, "a number").text;
-    double result{};
-    const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), result);
-    if (error != std::errc{} || end != text.data() + text.size()) {
-        throw MetadataError("JSON number is outside double range");
+bool JsonValue::asBool() const {
+    if (isString()) {
+        const auto& text = asString();
+        if (text == "true") return true;
+        if (text == "false") return false;
+        throw MetadataError("JSON value is not a boolean");
     }
-    return result;
+    return requireType<bool>(value_, "a boolean");
 }
 
 std::uint64_t JsonValue::asUInt64() const {
+    if (isString()) {
+        const auto& text = asString();
+        std::uint64_t result{};
+        const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), result);
+        if (error != std::errc{} || end != text.data() + text.size()) {
+            throw MetadataError("JSON value is not an unsigned 64-bit integer");
+        }
+        return result;
+    }
     const auto& text = requireType<JsonNumber>(value_, "an unsigned integer").text;
     std::uint64_t result{};
     const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), result);
     if (error != std::errc{} || end != text.data() + text.size()) {
         throw MetadataError("JSON value is not an unsigned 64-bit integer");
+    }
+    return result;
+}
+
+double JsonValue::asDouble() const {
+    if (isString()) {
+        const auto& text = asString();
+        double result{};
+        const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), result);
+        if (error != std::errc{} || end != text.data() + text.size()) {
+            throw MetadataError("JSON value is not a double");
+        }
+        return result;
+    }
+    const auto& text = requireType<JsonNumber>(value_, "a number").text;
+    double result{};
+    const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), result);
+    if (error != std::errc{} || end != text.data() + text.size()) {
+        throw MetadataError("JSON value is not a double");
     }
     return result;
 }
