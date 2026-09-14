@@ -738,3 +738,28 @@ the overlap the scheduler is intended to create. `synchronizeExecution`
 therefore waits only for the execution dependency chain on CUDA, while the
 existing full `synchronize` call remains available for shutdown, diagnostics,
 and explicit cross-stream materialization.
+
+## Why Phase 22 starts with per-projection INT8
+
+The measured Qwen3 bottleneck is expert movement, so the first precision format
+must reduce bytes in every residency tier rather than only changing arithmetic.
+Signed INT8 with one FP32 affine scale per gate/up/down projection gives a 4:1
+payload reduction from FP32, deterministic calibration, a small portable
+metadata contract, and a direct scalar oracle. FP8 and MXFP4 would introduce
+format, hardware, and calibration questions before the residency integration is
+proven.
+
+The scale is attached to the physical projection tensor in manifest v3, while
+the index retains dtype, shape, range, and checksum. This avoids hiding numerical
+metadata in a backend or bypassing `ExpertManager`. Floating-point packing is
+still the default, and v2 manifests remain accepted.
+
+## Why the first CUDA INT8 GEMM dequantizes in the dot product
+
+Expanding a selected expert into a second FP32 VRAM buffer would preserve PCIe
+savings but multiply hot-tier capacity pressure. The native CUDA reference
+kernel therefore reads each INT8 weight and applies `(q - zero_point) * scale`
+while accumulating an FP32 output. It is intentionally not a performance claim:
+tensor-core tiling, per-channel scales, and fusion require RTX measurements and
+belong to a later phase. Builds without native CUDA kernels fail this operation
+explicitly; they never silently route quantized device data through host staging.

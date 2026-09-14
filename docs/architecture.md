@@ -376,6 +376,10 @@ RAM. CUDA and CPU construct the same graph from the same manifest.
   dtype remains unchanged in the packed model.
 - `QuantizationPolicy` records validated INT8/Q4/Q8 scale, zero-point, and group
   metadata without implying an optimized kernel.
+- Phase 22A's deterministic INT8 packer stores one affine scale/zero point per
+  expert projection in manifest v3. The index continues to checksum exact
+  projection and expert byte ranges, so INT8 uses the same random-access and
+  corruption-detection path as floating-point storage.
 - `Attention` and `Norm` are device-neutral layer contracts. `CpuAttention`
   supplies FP32 multi-head/grouped-query Q/K/V, causal scaled softmax, context,
   and output projection; `RMSNorm` supplies the CPU reference normalization.
@@ -468,6 +472,10 @@ RAM. CUDA and CPU construct the same graph from the same manifest.
   diagonal scaling. Optional kernels add activation, RMSNorm, RoPE, top-k,
   causal attention, and sparse gather/scatter. The CPU backend remains the
   numerical reference.
+- `TensorBackend::matmulInt8Weights` is the quantized expert seam. CPU executes
+  the scalar affine reference; native CUDA reads INT8 weights and dequantizes
+  them inside FP32 dot products without materializing a second resident weight
+  tensor.
 - `CudaAttention` executes QKV and output projections through the CUDA tensor
   backend. Native builds also execute RoPE, causal score/mask, stable softmax,
   and context accumulation in CUDA; toolkit-only builds use the reference seam.
@@ -512,6 +520,6 @@ addition to tier-independent events.
   residuals, dense/non-MoE layers, output bias, batched sessions,
   beam/speculative decoding, streaming, and serving
 - Automatic scheduler-driven capacity selection and eviction policy execution
-- Quantized dequantization/GEMM, batched/strided GEMM, FP16 compute, kernel launch
-  policy, and CUDA graphs
+- Optimized/tensor-core quantized GEMM, batched/strided GEMM, FP16 compute,
+  kernel launch policy, and CUDA graphs
 - Fused or precision-specialized CUDA kernels

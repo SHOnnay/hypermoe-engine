@@ -327,6 +327,7 @@ void testRealModelRuntimeGenerationAdapter() {
     architecture.attentionHeads = 1;
     architecture.keyValueHeads = 1;
     architecture.headDimension = 2;
+    architecture.projectionHeadDimension = 2;
     architecture.expertCount = 1;
     architecture.topK = 1;
     architecture.vocabularySize = 4;

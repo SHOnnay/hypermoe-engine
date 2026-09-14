@@ -90,8 +90,9 @@ AttentionResult CudaAttention::execute(
                     configuration.keyValueHeadCount > std::numeric_limits<std::size_t>::max() / headDimension) {
                     throw std::invalid_argument("CUDA attention head configuration is invalid");
                 }
-                const auto queryWidth = configuration.headCount * configuration.projectionHeadDimension;
-                const auto keyValueWidth = configuration.keyValueHeadCount * configuration.projectionHeadDimension;
+                const auto queryWidth = configuration.headCount * projectionHeadDimension;
+                const auto keyValueWidth =
+                    configuration.keyValueHeadCount * projectionHeadDimension;
                 if (queryShape != std::vector<std::size_t>{hiddenShape[1], queryWidth} ||
                     keyShape != std::vector<std::size_t>{hiddenShape[1], keyValueWidth} ||
                     valueShape != keyShape ||

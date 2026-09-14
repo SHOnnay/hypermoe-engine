@@ -328,6 +328,7 @@ void testRoPEAndKVCache() {
     attentionConfiguration.headCount = 2;
     attentionConfiguration.keyValueHeadCount = 1;
     attentionConfiguration.headDimension = 2;
+    attentionConfiguration.projectionHeadDimension = 2;
     attentionConfiguration.causal = true;
     attentionConfiguration.rotaryEmbedding = true;
     const auto attentionResult = attention.execute(

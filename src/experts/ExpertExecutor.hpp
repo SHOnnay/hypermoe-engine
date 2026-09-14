@@ -2,8 +2,11 @@
 
 #include "tensor/TensorView.hpp"
 #include "tensor/activation/Activation.hpp"
+#include "tensor/quantization/Quantization.hpp"
 
 #include <memory>
+#include <optional>
+#include <utility>
 
 namespace hypermoe::tensor {
 class TensorBackend;
@@ -13,9 +16,30 @@ namespace hypermoe {
 class Profiler;
 
 struct ExpertMlpWeights {
+    ExpertMlpWeights() = default;
+    ExpertMlpWeights(
+        tensor::TensorView gate,
+        tensor::TensorView up,
+        tensor::TensorView down,
+        std::optional<tensor::quantization::QuantizationParameters>
+            gateParameters = {},
+        std::optional<tensor::quantization::QuantizationParameters>
+            upParameters = {},
+        std::optional<tensor::quantization::QuantizationParameters>
+            downParameters = {})
+        : gateProjection(std::move(gate)),
+          upProjection(std::move(up)),
+          downProjection(std::move(down)),
+          gateQuantization(gateParameters),
+          upQuantization(upParameters),
+          downQuantization(downParameters) {}
+
     tensor::TensorView gateProjection;
     tensor::TensorView upProjection;
     tensor::TensorView downProjection;
+    std::optional<tensor::quantization::QuantizationParameters> gateQuantization;
+    std::optional<tensor::quantization::QuantizationParameters> upQuantization;
+    std::optional<tensor::quantization::QuantizationParameters> downQuantization;
 };
 
 class ExpertExecutor {

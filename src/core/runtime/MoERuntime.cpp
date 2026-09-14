@@ -237,7 +237,10 @@ BatchLayerExecutionResult MoERuntime::executeBatch(
             ExpertMlpWeights executionWeights = weights;
             const auto prepare = [&](tensor::TensorView source,
                                      tensor::Tensor& owner) {
-                if (source.dtype() == tensor::DType::FP32) return source;
+                if (source.dtype() == tensor::DType::FP32 ||
+                    source.dtype() == tensor::DType::INT8) {
+                    return source;
+                }
                 owner = tensor::precision::DTypeConverter::toFp32Tensor(
                     source, *tensorBackend_);
                 return owner.view();

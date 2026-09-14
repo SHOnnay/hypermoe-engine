@@ -4,7 +4,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string_view>
+#include <vector>
 
 namespace hypermoe::tensor::quantization {
 
@@ -17,6 +19,15 @@ enum class QuantizedDType : std::uint32_t {
 struct QuantizationParameters {
     float scale{1.0F};
     std::int32_t zeroPoint{};
+
+    friend bool operator==(const QuantizationParameters&,
+                           const QuantizationParameters&) = default;
+};
+
+struct Int8QuantizationResult {
+    std::vector<std::byte> bytes;
+    QuantizationParameters parameters;
+    float maximumAbsoluteError{};
 };
 
 [[nodiscard]] constexpr std::string_view toString(QuantizedDType dtype) noexcept {
@@ -32,5 +43,9 @@ struct QuantizationParameters {
                                            QuantizedDType dtype);
 void validateParameters(QuantizedDType dtype,
                         const QuantizationParameters& parameters);
+[[nodiscard]] Int8QuantizationResult quantizeInt8(std::span<const float> values);
+[[nodiscard]] std::vector<float> dequantizeInt8(
+    std::span<const std::byte> values,
+    const QuantizationParameters& parameters);
 
 } // namespace hypermoe::tensor::quantization

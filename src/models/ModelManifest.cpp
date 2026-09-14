@@ -3,7 +3,10 @@
 #include "models/metadata/JsonValue.hpp"
 
 #include <algorithm>
+#include <charconv>
+#include <cmath>
 #include <fstream>
+#include <iomanip>
 #include <limits>
 #include <set>
 #include <sstream>
@@ -66,6 +69,30 @@ std::uint32_t asId(const JsonValue& value, std::string_view field) {
         throw MetadataError(std::string(field) + " exceeds uint32_t");
     }
     return static_cast<std::uint32_t>(number);
+}
+
+std::int32_t asInt32(const JsonValue& value, std::string_view field) {
+    const auto number = value.asDouble();
+    if (!std::isfinite(number) || std::trunc(number) != number ||
+        number < static_cast<double>(std::numeric_limits<std::int32_t>::min()) ||
+        number > static_cast<double>(std::numeric_limits<std::int32_t>::max())) {
+        throw MetadataError(std::string(field) + " is not a signed 32-bit integer");
+    }
+    return static_cast<std::int32_t>(number);
+}
+
+tensor::quantization::QuantizationParameters parseQuantization(
+    const JsonValue& value) {
+    const auto scheme = value.require("scheme").asString();
+    if (scheme != "PER_TENSOR_AFFINE_INT8") {
+        throw MetadataError("unsupported manifest quantization scheme");
+    }
+    tensor::quantization::QuantizationParameters result{
+        static_cast<float>(value.require("scale").asDouble()),
+        asInt32(value.require("zero_point"), "zero_point")};
+    tensor::quantization::validateParameters(
+        tensor::quantization::QuantizedDType::INT8, result);
+    return result;
 }
 
 tensor::Shape parseShape(const JsonValue& value) {
@@ -164,7 +191,9 @@ std::uint64_t requiredBytes(const tensor::Shape& shape, tensor::DType dtype) {
 } // namespace
 
 void ModelManifest::validate() const {
-    if (schema != schemaVersion) throw std::invalid_argument("unsupported manifest schema");
+    if (schema != schemaVersion && schema != legacySchemaVersion) {
+        throw std::invalid_argument("unsupported manifest schema");
+    }
     if (modelName.empty() || sourceArchitecture.empty()) {
         throw std::invalid_argument("manifest model identity is incomplete");
     }
@@ -206,6 +235,18 @@ void ModelManifest::validate() const {
         if (requiredBytes(value.shape, value.dtype) != value.size) {
             throw std::invalid_argument("manifest tensor shape does not match byte size");
         }
+        if (value.dtype == tensor::DType::INT8) {
+            if (!value.quantization) {
+                throw std::invalid_argument(
+                    "INT8 manifest tensor is missing quantization metadata");
+            }
+            tensor::quantization::validateParameters(
+                tensor::quantization::QuantizedDType::INT8,
+                *value.quantization);
+        } else if (value.quantization) {
+            throw std::invalid_argument(
+                "non-INT8 manifest tensor has quantization metadata");
+        }
         if (!byName.emplace(value.name, &value).second) {
             throw std::invalid_argument("duplicate manifest tensor name");
         }
@@ -230,6 +271,7 @@ void ModelManifest::validate() const {
 
     std::set<std::pair<std::uint32_t, std::uint32_t>> identities;
     std::unordered_map<std::uint32_t, std::size_t> expertsPerLayer;
+    bool hasQuantizedExperts{};
     const auto validateProjection = [&](const ProjectionLocation& projection,
                                         bool down) {
         if (!isValid(projection.layout)) {
@@ -270,6 +312,18 @@ void ModelManifest::validate() const {
             throw std::invalid_argument("duplicate manifest expert mapping");
         }
         ++expertsPerLayer[expert.layerId];
+        const auto gateTensor = byName.find(expert.gate.tensorName);
+        const auto upTensor = byName.find(expert.up.tensorName);
+        const auto downTensor = byName.find(expert.down.tensorName);
+        if (gateTensor == byName.end() || upTensor == byName.end() ||
+            downTensor == byName.end() ||
+            gateTensor->second->dtype != upTensor->second->dtype ||
+            gateTensor->second->dtype != downTensor->second->dtype) {
+            throw std::invalid_argument(
+                "expert projections must use one storage dtype");
+        }
+        hasQuantizedExperts = hasQuantizedExperts ||
+            gateTensor->second->dtype == tensor::DType::INT8;
         validateProjection(expert.gate, false);
         validateProjection(expert.up, false);
         validateProjection(expert.down, true);
@@ -287,6 +341,10 @@ void ModelManifest::validate() const {
         if (!expertsPerLayer.contains(layer)) {
             throw std::invalid_argument("manifest router layer has no expert mappings");
         }
+    }
+    if (config.capabilities.quantizedExpertWeights != hasQuantizedExperts) {
+        throw std::invalid_argument(
+            "manifest quantized expert capability disagrees with expert tensors");
     }
     if (!layers.empty()) {
         if (!runtimeArchitecture || layers.size() != runtimeArchitecture->layerCount) {
@@ -494,6 +552,13 @@ std::string ModelManifest::toJson() const {
                << "\",\"offset\":" << value.offset << ",\"size\":" << value.size
                << ",\"dtype\":\"" << tensor::toString(value.dtype) << "\",\"shape\":";
         writeShape(output, value.shape);
+        if (value.quantization) {
+            output << ",\"quantization\":{\"scheme\":\"PER_TENSOR_AFFINE_INT8\""
+                   << ",\"scale\":"
+                   << std::setprecision(std::numeric_limits<float>::max_digits10)
+                   << value.quantization->scale
+                   << ",\"zero_point\":" << value.quantization->zeroPoint << '}';
+        }
         output << '}' << (index + 1 == tensors.size() ? "\n" : ",\n");
     }
     output << "  ],\n  \"experts\": [\n";
@@ -635,6 +700,9 @@ ModelManifest ModelManifest::load(const std::filesystem::path& path) {
         value.size = tensorValue.require("size").asUInt64();
         value.dtype = parseDType(tensorValue.require("dtype").asString());
         value.shape = parseShape(tensorValue.require("shape"));
+        if (const auto* quantization = tensorValue.find("quantization")) {
+            value.quantization = parseQuantization(*quantization);
+        }
         result.tensors.push_back(std::move(value));
     }
     for (const auto& expertValue : root.require("experts").asArray()) {

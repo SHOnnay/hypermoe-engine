@@ -13,6 +13,12 @@ runtime-artifact conversion, demand-resident packed-model execution, detailed
 intermediate trace comparison, and measured single-sequence profiling. There is
 no server or chat API.
 
+Phase 22A adds optional deterministic INT8 packing and execution for sparse
+expert gate/up/down weights. Quantized bytes remain compressed across NVMe, RAM,
+and VRAM; the CPU reference and native CUDA backend produce FP32 activations by
+applying per-projection affine scales during GEMM. Floating-point artifacts and
+the CPU-only build remain supported.
+
 Phase 14.5 hardens the same runtime contracts across 64-bit little-endian
 Windows, Linux, and macOS targets. It adds explicit wire-enum values, alignment
 validation for external tensor storage, safer empty/moved buffer behavior,
@@ -62,6 +68,8 @@ ctest --test-dir build --output-on-failure
   1,42,73 cpu real_model_profile.json
 ./build/hypermoe_real_qwen_validate /path/to/runtime-artifact \
   1,42,73 cpu_cuda_validation.json
+./build/hypermoe_quantized_expert_benchmark \
+  phase22_quantized_expert_report.json
 ```
 
 Enable runtime memory checks with:
@@ -116,6 +124,9 @@ describe the Phase 18/19 execution and artifact-validation boundaries.
 See [real Qwen runtime](docs/components/real-qwen-runtime.md) and
 [real-model profiling](docs/components/profiling.md) for Phase 20 artifact
 requirements, execution flow, metric definitions, and current compatibility.
+See [quantized expert execution](docs/components/quantized-expert-execution.md)
+for the Phase 22A artifact metadata, residency contract, numerical bounds, and
+benchmark scope.
 
 The Phase 1 simulator accepts `--requests`, `--seed`, `--vram-mib`, and
 `--ram-mib`. The Phase 2 simulator accepts `--tokens`, `--seed`, `--read-mode`
@@ -223,8 +234,10 @@ weight bytes. Scheduler residency must keep that buffer alive while it is in use
 
 `QuantizedTensor` owns or aliases checked packed storage and records shape,
 device, positive scale, signed zero point, and `INT8` or packed signed `Q4` dtype.
-Its versioned JSON metadata exposes the packed storage size. This phase does not
-yet dequantize or execute quantized GEMM.
+Its versioned JSON metadata exposes the packed storage size. Phase 22A adds
+deterministic symmetric INT8 packing plus CPU and native-CUDA
+`FP32 activation x INT8 weight -> FP32 activation` execution. Q4 remains metadata
+only.
 
 `ExpertMlpExecutor` performs the common gated primitive
 `down(activation(input × gate) * (input × up))`. CPU SiLU and exact GELU are the
@@ -251,8 +264,9 @@ Qwen-style `gate_proj`, `up_proj`, `down_proj`, and router tensor names.
 The Phase 7 adapter input is the documented
 `hypermoe.model-manifest.v1` JSON schema. This is an inspection/validation
 manifest, not a claim that native Qwen checkpoints use this format. Phase 8's
-Qwen SafeTensors importer now produces the more explicit v2 runtime manifest;
-GGUF remains unsupported.
+Qwen SafeTensors importer produces the explicit runtime manifest. Phase 22A
+advances packed manifests to v3 with optional per-tensor INT8 affine metadata;
+v2 floating-point manifests remain readable. GGUF remains unsupported.
 
 `CpuRouterBackend` calculates router logits for one hidden state, optionally
 applies stable softmax, selects deterministic top-k experts, and optionally

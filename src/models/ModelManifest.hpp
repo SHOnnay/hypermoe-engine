@@ -5,11 +5,13 @@
 #include "router/RouterConfig.hpp"
 #include "tensor/DType.hpp"
 #include "tensor/Shape.hpp"
+#include "tensor/quantization/Quantization.hpp"
 
 #include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace hypermoe::models {
@@ -33,12 +35,31 @@ enum class TensorLayout : std::uint32_t {
 }
 
 struct ManifestTensor {
+    ManifestTensor() = default;
+    ManifestTensor(
+        std::string tensorName,
+        std::filesystem::path tensorSourceFile,
+        std::uint64_t tensorOffset,
+        std::uint64_t tensorSize,
+        tensor::DType tensorDType,
+        tensor::Shape tensorShape,
+        std::optional<tensor::quantization::QuantizationParameters>
+            tensorQuantization = {})
+        : name(std::move(tensorName)),
+          sourceFile(std::move(tensorSourceFile)),
+          offset(tensorOffset),
+          size(tensorSize),
+          dtype(tensorDType),
+          shape(std::move(tensorShape)),
+          quantization(tensorQuantization) {}
+
     std::string name;
     std::filesystem::path sourceFile;
     std::uint64_t offset{};
     std::uint64_t size{};
     tensor::DType dtype{tensor::DType::FP32};
     tensor::Shape shape;
+    std::optional<tensor::quantization::QuantizationParameters> quantization;
 };
 
 struct ProjectionLocation {
@@ -96,6 +117,8 @@ struct ManifestModelIO {
 class ModelManifest {
 public:
     static constexpr std::string_view schemaVersion =
+        "hypermoe.model-manifest.v3";
+    static constexpr std::string_view legacySchemaVersion =
         "hypermoe.model-manifest.v2";
 
     std::string schema{schemaVersion};

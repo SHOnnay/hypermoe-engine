@@ -1,6 +1,9 @@
 #include "tensor/quantization/Quantization.hpp"
 
+#include <algorithm>
+#include <bit>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 
 namespace hypermoe::tensor::quantization {
@@ -37,6 +40,60 @@ void validateParameters(QuantizedDType dtype,
         return;
     }
     throw std::invalid_argument("unsupported quantized dtype");
+}
+
+Int8QuantizationResult quantizeInt8(std::span<const float> values) {
+    if (values.empty()) {
+        throw std::invalid_argument("INT8 quantization source cannot be empty");
+    }
+    float maximumMagnitude{};
+    for (const auto value : values) {
+        if (!std::isfinite(value)) {
+            throw std::invalid_argument(
+                "INT8 quantization source must contain finite values");
+        }
+        maximumMagnitude = std::max(maximumMagnitude, std::fabs(value));
+    }
+
+    Int8QuantizationResult result;
+    result.parameters.scale = maximumMagnitude == 0.0F
+        ? 1.0F
+        : maximumMagnitude / 127.0F;
+    result.parameters.zeroPoint = 0;
+    validateParameters(QuantizedDType::INT8, result.parameters);
+    result.bytes.resize(values.size());
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        const auto rounded = std::round(values[index] / result.parameters.scale);
+        const auto clamped = std::clamp(rounded, -127.0F, 127.0F);
+        const auto quantized = static_cast<std::int8_t>(clamped);
+        result.bytes[index] = std::bit_cast<std::byte>(quantized);
+        const auto reconstructed =
+            static_cast<float>(static_cast<std::int32_t>(quantized) -
+                               result.parameters.zeroPoint) *
+            result.parameters.scale;
+        result.maximumAbsoluteError = std::max(
+            result.maximumAbsoluteError,
+            std::fabs(values[index] - reconstructed));
+    }
+    return result;
+}
+
+std::vector<float> dequantizeInt8(
+    std::span<const std::byte> values,
+    const QuantizationParameters& parameters) {
+    if (values.empty()) {
+        throw std::invalid_argument("INT8 dequantization source cannot be empty");
+    }
+    validateParameters(QuantizedDType::INT8, parameters);
+    std::vector<float> result(values.size());
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        const auto quantized = std::bit_cast<std::int8_t>(values[index]);
+        result[index] =
+            static_cast<float>(static_cast<std::int32_t>(quantized) -
+                               parameters.zeroPoint) *
+            parameters.scale;
+    }
+    return result;
 }
 
 } // namespace hypermoe::tensor::quantization

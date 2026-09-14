@@ -36,6 +36,11 @@ public:
     void matmul(TensorView left,
                 TensorView right,
                 TensorView output) override;
+    void matmulInt8Weights(
+        TensorView left,
+        TensorView right,
+        const quantization::QuantizationParameters& parameters,
+        TensorView output) override;
     void add(TensorView left,
              TensorView right,
              TensorView output) override;

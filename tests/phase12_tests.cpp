@@ -156,8 +156,13 @@ void testAttentionAndNormalization() {
     auto value = makeTensor(backend, {2, 2}, identity);
     auto outputProjection = makeTensor(backend, {2, 2}, identity);
     transformer::attention::CpuAttention attention(backend);
+    transformer::attention::AttentionConfiguration attentionConfiguration;
+    attentionConfiguration.headCount = 1;
+    attentionConfiguration.keyValueHeadCount = 1;
+    attentionConfiguration.headDimension = 2;
+    attentionConfiguration.projectionHeadDimension = 2;
     const auto result = attention.execute(
-        hidden, {query, key, value, outputProjection});
+        hidden, {query, key, value, outputProjection}, attentionConfiguration);
     const auto diagonal = std::exp(1.0F / std::sqrt(2.0F));
     const auto selected = diagonal / (diagonal + 1.0F);
     const auto other = 1.0F / (diagonal + 1.0F);
@@ -170,7 +175,8 @@ void testAttentionAndNormalization() {
     auto badProjection = makeTensor(backend, {1, 2}, std::vector<float>{1, 1});
     expectThrows([&] {
         (void)attention.execute(
-            hidden, {badProjection, key, value, outputProjection});
+            hidden, {badProjection, key, value, outputProjection},
+            attentionConfiguration);
     }, "CPU attention rejects incompatible projection shapes");
 
     auto normInput = makeTensor(backend, {2, 2},
@@ -321,9 +327,15 @@ void testBatchedMoEAndTransformerBlock() {
     context.sequencePosition = 17;
     context.hiddenDimension = 2;
     context.layerIndex = 0;
+    transformer::attention::AttentionConfiguration attentionConfiguration;
+    attentionConfiguration.headCount = 1;
+    attentionConfiguration.keyValueHeadCount = 1;
+    attentionConfiguration.headDimension = 2;
+    attentionConfiguration.projectionHeadDimension = 2;
     const auto blockResult = block.execute(
         context, hidden,
-        {{query, key, value, attentionOutput}, normWeight, routerWeights, {}, {}});
+        {{query, key, value, attentionOutput}, normWeight, routerWeights,
+         attentionConfiguration, {}});
     std::vector<float> residualExpected(6);
     const auto attentionValues = floats(blockResult.attention.output);
     const auto moeValues = floats(blockResult.moe.output);

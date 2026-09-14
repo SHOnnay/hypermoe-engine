@@ -130,6 +130,65 @@ void CpuTensorBackend::matmul(TensorView left,
     if (profiler_) profiler_->recordMatmulTime(std::chrono::steady_clock::now() - start);
 }
 
+void CpuTensorBackend::matmulInt8Weights(
+    TensorView left,
+    TensorView right,
+    const quantization::QuantizationParameters& parameters,
+    TensorView output) {
+    [[maybe_unused]] const auto leftOwner = pin(left, "CPU INT8 weight matmul");
+    [[maybe_unused]] const auto rightOwner = pin(right, "CPU INT8 weight matmul");
+    [[maybe_unused]] const auto outputOwner = pin(output, "CPU INT8 weight matmul");
+    validateCpuContiguous(left, "CPU INT8 weight matmul");
+    validateCpuContiguous(right, "CPU INT8 weight matmul");
+    validateCpuContiguous(output, "CPU INT8 weight matmul");
+    quantization::validateParameters(quantization::QuantizedDType::INT8,
+                                     parameters);
+    if (left.dtype() != DType::FP32 || right.dtype() != DType::INT8 ||
+        output.dtype() != DType::FP32 || left.shape().rank() != 2 ||
+        right.shape().rank() != 2 || output.shape().rank() != 2 ||
+        !output.writable()) {
+        throw std::invalid_argument(
+            "CPU INT8 weight matmul requires FP32 input/output and rank-2 INT8 weights");
+    }
+    const auto& leftDims = left.shape().dimensions();
+    const auto& rightDims = right.shape().dimensions();
+    const auto& outputDims = output.shape().dimensions();
+    const auto rows = leftDims[0];
+    const auto inner = leftDims[1];
+    const auto columns = rightDims[1];
+    if (rightDims[0] != inner || outputDims[0] != rows ||
+        outputDims[1] != columns) {
+        throw std::invalid_argument(
+            "CPU INT8 weight matmul dimensions are incompatible");
+    }
+    if (left.data() == output.data() || right.data() == output.data()) {
+        throw std::invalid_argument(
+            "CPU INT8 weight matmul output cannot alias an input");
+    }
+
+    const auto start = std::chrono::steady_clock::now();
+    const auto* leftData = static_cast<const float*>(left.data());
+    const auto* rightData = static_cast<const std::int8_t*>(right.data());
+    auto* outputData = static_cast<float*>(output.mutableData());
+    for (std::size_t row = 0; row < rows; ++row) {
+        for (std::size_t column = 0; column < columns; ++column) {
+            float sum = 0.0F;
+            for (std::size_t index = 0; index < inner; ++index) {
+                const auto quantized = static_cast<std::int32_t>(
+                    rightData[index * columns + column]);
+                const auto weight =
+                    static_cast<float>(quantized - parameters.zeroPoint) *
+                    parameters.scale;
+                sum += leftData[row * inner + index] * weight;
+            }
+            outputData[row * columns + column] = sum;
+        }
+    }
+    if (profiler_) {
+        profiler_->recordMatmulTime(std::chrono::steady_clock::now() - start);
+    }
+}
+
 void CpuTensorBackend::add(TensorView left,
                            TensorView right,
                            TensorView output) {

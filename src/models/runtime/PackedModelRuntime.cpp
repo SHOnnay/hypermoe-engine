@@ -54,14 +54,19 @@ models::ExpertWeightMap makeExpertMappings(const models::ModelManifest& manifest
     for (const auto& expert : manifest.experts) {
         const auto add = [&](models::ExpertWeightType type,
                              const models::ProjectionLocation& projection) {
-            const auto* tensor = manifest.findTensor(projection.tensorName);
-            if (!tensor) {
+            const auto* metadata = manifest.findTensor(projection.tensorName);
+            if (!metadata) {
                 throw std::invalid_argument("packed expert projection tensor is missing");
             }
             result.add(expert.layerId, expert.expertId, type,
-                       {tensor->name, projection.shape, tensor->dtype, std::nullopt,
+                       {metadata->name, projection.shape, metadata->dtype,
+                        metadata->quantization
+                            ? std::optional{
+                                  tensor::quantization::QuantizedDType::INT8}
+                            : std::nullopt,
                         projection.offset, projection.size,
-                        expert.layerId, expert.expertId});
+                        expert.layerId, expert.expertId,
+                        metadata->quantization});
         };
         add(models::ExpertWeightType::GATE, expert.gate);
         add(models::ExpertWeightType::UP, expert.up);

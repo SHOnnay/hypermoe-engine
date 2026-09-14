@@ -293,8 +293,8 @@ void testSyntheticEndToEnd() {
                std::fabs(output[0] - expected0) < 1.0e-5F &&
                std::fabs(output[1] - expected1) < 1.0e-5F,
            "synthetic MoE routes, schedules, adopts, executes, and combines experts");
-    expect(experts.findExpert(0, 0)->location == MemoryTier::Vram &&
-               experts.findExpert(0, 1)->location == MemoryTier::Vram &&
+    expect(experts.findExpert(0, 0)->location == MemoryTier::Ram &&
+               experts.findExpert(0, 1)->location == MemoryTier::Ram &&
                scheduler->state(0, 0).state ==
                    scheduler::ExpertLifecycleState::Ready &&
                history->frequency(0, 0) == 1 && history->frequency(0, 1) == 1,

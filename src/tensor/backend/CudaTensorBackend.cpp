@@ -323,6 +323,68 @@ void CudaTensorBackend::matmul(TensorView left,
 #endif
 }
 
+void CudaTensorBackend::matmulInt8Weights(
+    TensorView left,
+    TensorView right,
+    const quantization::QuantizationParameters& parameters,
+    TensorView output) {
+    if (!available()) throw std::runtime_error("CUDA tensor backend is unavailable");
+    [[maybe_unused]] const auto leftOwner = pin(left, "CUDA INT8 weight matmul");
+    [[maybe_unused]] const auto rightOwner = pin(right, "CUDA INT8 weight matmul");
+    [[maybe_unused]] const auto outputOwner = pin(output, "CUDA INT8 weight matmul");
+    quantization::validateParameters(quantization::QuantizedDType::INT8,
+                                     parameters);
+    if (!left || !right || !output || left.device() != device() ||
+        right.device() != device() || output.device() != device() ||
+        !left.isContiguous() || !right.isContiguous() ||
+        !output.isContiguous() || left.dtype() != DType::FP32 ||
+        right.dtype() != DType::INT8 || output.dtype() != DType::FP32 ||
+        left.shape().rank() != 2 || right.shape().rank() != 2 ||
+        output.shape().rank() != 2 || !output.writable()) {
+        throw std::invalid_argument(
+            "CUDA INT8 weight matmul requires FP32 input/output and rank-2 INT8 weights");
+    }
+    const auto& leftDims = left.shape().dimensions();
+    const auto& rightDims = right.shape().dimensions();
+    const auto& outputDims = output.shape().dimensions();
+    if (rightDims[0] != leftDims[1] || outputDims[0] != leftDims[0] ||
+        outputDims[1] != rightDims[1]) {
+        throw std::invalid_argument(
+            "CUDA INT8 weight matmul dimensions are incompatible");
+    }
+    if (left.data() == output.data() || right.data() == output.data()) {
+        throw std::invalid_argument(
+            "CUDA INT8 weight matmul output cannot alias an input");
+    }
+#ifdef HYPERMOE_HAS_CUDA_KERNELS
+    const auto outputElements = checkedProduct(
+        leftDims[0], rightDims[1], "CUDA INT8 weight matmul");
+    if (outputElements >
+        static_cast<std::size_t>(std::numeric_limits<unsigned>::max()) *
+            static_cast<std::size_t>(256U)) {
+        throw std::overflow_error("CUDA INT8 weight matmul launch is too large");
+    }
+    const auto start = std::chrono::steady_clock::now();
+    backend::cuda::kernels::int8WeightMatmul(
+        static_cast<const float*>(left.data()),
+        static_cast<const std::int8_t*>(right.data()),
+        static_cast<float*>(output.mutableData()), leftDims[0], leftDims[1],
+        rightDims[1], parameters.scale, parameters.zeroPoint,
+        impl_->streams->stream(backend::CudaStreamRole::Compute));
+    if (impl_->profiler) {
+        impl_->backend->synchronize(
+            impl_->streams->stream(backend::CudaStreamRole::Compute));
+        const auto elapsed = std::chrono::steady_clock::now() - start;
+        impl_->profiler->recordKernelTime(elapsed);
+        impl_->profiler->recordMatmulTime(elapsed);
+    }
+#else
+    (void)parameters;
+    throw std::runtime_error(
+        "CUDA INT8 expert execution requires native CUDA kernels");
+#endif
+}
+
 void CudaTensorBackend::add(TensorView left,
                             TensorView right,
                             TensorView output) {

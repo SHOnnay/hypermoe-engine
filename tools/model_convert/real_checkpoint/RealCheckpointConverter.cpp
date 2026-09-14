@@ -36,6 +36,9 @@ std::string RealCheckpointConversionReport::toJson() const {
            << ",\n  \"source_shards\": " << checkpoint.shardCount
            << ",\n  \"source_tensors\": " << checkpoint.tensorCount
            << ",\n  \"packed_bytes\": " << packing.bytesWritten
+           << ",\n  \"expert_storage\": \"" << packing.expertStorage << '"'
+           << ",\n  \"source_expert_bytes\": " << packing.sourceExpertBytes
+           << ",\n  \"packed_expert_bytes\": " << packing.packedExpertBytes
            << ",\n  \"elapsed_ms\": "
            << std::chrono::duration<double, std::milli>(elapsed).count()
            << ",\n  \"tokenizer\": " << tokenizer.toJson() << "}\n";
@@ -44,7 +47,8 @@ std::string RealCheckpointConversionReport::toJson() const {
 
 RealCheckpointConversionReport RealCheckpointConverter::convertQwen(
     const std::filesystem::path& checkpoint,
-    const std::filesystem::path& outputDirectory) const {
+    const std::filesystem::path& outputDirectory,
+    ExpertPackingOptions packingOptions) const {
     const auto started = std::chrono::steady_clock::now();
     const auto descriptor = importer::qwen::QwenCheckpointLoader{}.load(checkpoint);
     RealCheckpointConversionReport result;
@@ -55,7 +59,8 @@ RealCheckpointConversionReport RealCheckpointConverter::convertQwen(
     bool packed{};
     try {
         result.packing = ExpertPacker{}.pack(
-            descriptor.manifest, descriptor.root, outputDirectory);
+            descriptor.manifest, descriptor.root, outputDirectory,
+            packingOptions);
         packed = true;
         if (!result.packing.validationPassed) {
             throw std::runtime_error("real checkpoint packing did not pass validation");

@@ -4,6 +4,8 @@
 #include "importer/validation/CheckpointValidator.hpp"
 #include "storage/ExpertIndex.hpp"
 #include "storage/ExpertStore.hpp"
+#include "tensor/precision/DTypeConverter.hpp"
+#include "tensor/quantization/Quantization.hpp"
 #include "tools/model_convert/WeightConverter.hpp"
 
 #include <algorithm>
@@ -77,6 +79,12 @@ std::string PackingReport::toJson() const {
            << "  \"parameters_indexed\": " << parametersIndexed << ",\n"
            << "  \"bytes_read\": " << bytesRead << ",\n"
            << "  \"bytes_written\": " << bytesWritten << ",\n"
+           << "  \"source_expert_bytes\": " << sourceExpertBytes << ",\n"
+           << "  \"packed_expert_bytes\": " << packedExpertBytes << ",\n"
+           << "  \"quantized_projections\": " << quantizedProjections << ",\n"
+           << "  \"expert_storage\": \"" << expertStorage << "\",\n"
+           << "  \"maximum_quantization_error\": "
+           << maximumQuantizationError << ",\n"
            << "  \"shards\": " << shardCount << ",\n"
            << "  \"validation_passed\": "
            << (validationPassed ? "true" : "false") << ",\n"
@@ -94,7 +102,8 @@ std::string PackingReport::toJson() const {
 
 PackingReport ExpertPacker::pack(const models::ModelManifest& sourceManifest,
                                  const std::filesystem::path& artifactRoot,
-                                 const std::filesystem::path& outputDirectory) const {
+                                 const std::filesystem::path& outputDirectory,
+                                 ExpertPackingOptions options) const {
     sourceManifest.validate();
     const auto checkpoint = importer::validation::CheckpointValidator::validate(
         artifactRoot, sourceManifest);
@@ -107,15 +116,22 @@ PackingReport ExpertPacker::pack(const models::ModelManifest& sourceManifest,
                              std::ios::binary | std::ios::trunc);
         if (!output) throw storage::StorageError("cannot create packed expert data");
         models::ModelManifest packed = sourceManifest;
+        packed.schema = std::string(models::ModelManifest::schemaVersion);
         packed.tensors.clear();
         packed.experts.clear();
         packed.router.tensors.clear();
         packed.layers.clear();
         packed.modelIO.reset();
         packed.router.layout = models::TensorLayout::InputOutput;
+        packed.config.capabilities.quantizedExpertWeights =
+            options.expertEncoding == ExpertStorageEncoding::Int8;
         std::vector<storage::ExpertRecord> experts;
         std::vector<storage::ProjectionRecord> projections;
         PackingReport report;
+        report.expertStorage =
+            options.expertEncoding == ExpertStorageEncoding::Int8
+                ? "INT8_PER_TENSOR_AFFINE"
+                : "PRESERVE";
         report.layers = sourceManifest.config.layerCount;
         report.sourceTensors = sourceManifest.tensors.size();
         report.shardCount = checkpoint.shardCount;
@@ -151,6 +167,22 @@ PackingReport ExpertPacker::pack(const models::ModelManifest& sourceManifest,
                 }
                 auto converted = WeightConverter::convert(
                     bytes, location.shape, tensor->dtype, location.layout);
+                report.sourceExpertBytes += converted.bytes.size();
+                std::optional<tensor::quantization::QuantizationParameters>
+                    quantization;
+                if (options.expertEncoding == ExpertStorageEncoding::Int8) {
+                    const auto values = tensor::precision::DTypeConverter::toFp32(
+                        converted.bytes, converted.dtype);
+                    auto quantized = tensor::quantization::quantizeInt8(values);
+                    converted.bytes = std::move(quantized.bytes);
+                    converted.dtype = tensor::DType::INT8;
+                    quantization = quantized.parameters;
+                    report.maximumQuantizationError = std::max(
+                        report.maximumQuantizationError,
+                        quantized.maximumAbsoluteError);
+                    ++report.quantizedProjections;
+                }
+                report.packedExpertBytes += converted.bytes.size();
                 if (expertBytes.size() >
                     std::numeric_limits<std::uint64_t>::max() - expertStart) {
                     throw storage::StorageError("packed projection offset overflow");
@@ -163,7 +195,8 @@ PackingReport ExpertPacker::pack(const models::ModelManifest& sourceManifest,
                                   "." + role;
                 packed.tensors.push_back({name, "experts.bin", projectionOffset,
                                           static_cast<std::uint64_t>(converted.bytes.size()),
-                                          converted.dtype, converted.shape});
+                                          converted.dtype, converted.shape,
+                                          quantization});
                 models::ProjectionLocation packedLocation{
                     name, projectionOffset,
                     static_cast<std::uint64_t>(converted.bytes.size()), converted.shape,
@@ -189,7 +222,9 @@ PackingReport ExpertPacker::pack(const models::ModelManifest& sourceManifest,
                 throw storage::StorageError(
                     "expert projections must exist and use one storage dtype");
             }
-            const auto dtype = gateTensor->dtype;
+            const auto dtype = options.expertEncoding == ExpertStorageEncoding::Int8
+                ? tensor::DType::INT8
+                : gateTensor->dtype;
             mapping.gate = packProjection(sourceExpert.gate, storage::ProjectionType::Gate, "gate");
             mapping.up = packProjection(sourceExpert.up, storage::ProjectionType::Up, "up");
             mapping.down = packProjection(sourceExpert.down, storage::ProjectionType::Down, "down");
@@ -240,7 +275,7 @@ PackingReport ExpertPacker::pack(const models::ModelManifest& sourceManifest,
             const auto name = "layers." + std::to_string(sourceRouter.layerId) + ".router";
             packed.tensors.push_back({name, "experts.bin", routerOffset,
                                       static_cast<std::uint64_t>(converted.bytes.size()),
-                                      converted.dtype, converted.shape});
+                                      converted.dtype, converted.shape, std::nullopt});
             packed.router.tensors.push_back({sourceRouter.layerId, name});
             packedRouterNames.emplace(sourceRouter.tensorName, name);
         }
@@ -286,7 +321,7 @@ PackingReport ExpertPacker::pack(const models::ModelManifest& sourceManifest,
                 packed.tensors.push_back(
                     {name, "experts.bin", offset,
                      static_cast<std::uint64_t>(converted.bytes.size()),
-                     converted.dtype, converted.shape});
+                     converted.dtype, converted.shape, std::nullopt});
                 return models::ManifestTensorBinding{
                     name, models::TensorLayout::InputOutput};
             };
@@ -323,7 +358,7 @@ PackingReport ExpertPacker::pack(const models::ModelManifest& sourceManifest,
                 packed.tensors.push_back(
                     {name, "experts.bin", offset,
                      static_cast<std::uint64_t>(sourceBytes.size()), source->dtype,
-                     source->shape});
+                     source->shape, std::nullopt});
                 return name;
             };
             layer.queryProjection = packTensor(sourceLayer.queryProjection, "q_proj");
@@ -382,7 +417,7 @@ PackingReport ExpertPacker::pack(const models::ModelManifest& sourceManifest,
                 packed.tensors.push_back(
                     {name, "experts.bin", offset,
                      static_cast<std::uint64_t>(converted.bytes.size()),
-                     converted.dtype, converted.shape});
+                     converted.dtype, converted.shape, std::nullopt});
                 return name;
             };
             const auto* embedding = sourceManifest.findTensor(

@@ -26,6 +26,26 @@ __global__ void activationKernel(int type, const float* input, float* output,
     }
 }
 
+__global__ void int8WeightMatmulKernel(
+    const float* left, const std::int8_t* right, float* output,
+    std::size_t rows, std::size_t inner, std::size_t columns,
+    float scale, std::int32_t zeroPoint) {
+    const auto outputIndex =
+        static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    const auto outputElements = rows * columns;
+    if (outputIndex >= outputElements) return;
+    const auto row = outputIndex / columns;
+    const auto column = outputIndex % columns;
+    float sum = 0.0F;
+    for (std::size_t index = 0; index < inner; ++index) {
+        const auto quantized =
+            static_cast<std::int32_t>(right[index * columns + column]);
+        const auto weight = static_cast<float>(quantized - zeroPoint) * scale;
+        sum += left[row * inner + index] * weight;
+    }
+    output[outputIndex] = sum;
+}
+
 __global__ void rmsNormKernel(const float* input, const float* weight,
                               float* output, std::size_t rows,
                               std::size_t width, float epsilon) {
@@ -230,6 +250,16 @@ void activation(int type, const float* input, float* output,
                        static_cast<cudaStream_t>(stream)>>>(
         type, input, output, elements);
     checkLaunch("CUDA activation kernel");
+}
+
+void int8WeightMatmul(const float* left, const std::int8_t* right,
+                      float* output, std::size_t rows, std::size_t inner,
+                      std::size_t columns, float scale,
+                      std::int32_t zeroPoint, StreamHandle stream) {
+    int8WeightMatmulKernel<<<blocks(rows * columns), threadsPerBlock, 0,
+                             static_cast<cudaStream_t>(stream)>>>(
+        left, right, output, rows, inner, columns, scale, zeroPoint);
+    checkLaunch("CUDA INT8 weight matmul kernel");
 }
 
 void rmsNorm(const float* input, const float* weight, float* output,

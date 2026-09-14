@@ -47,16 +47,31 @@ void ExpertMlpExecutor::execute(tensor::TensorView input,
         throw std::invalid_argument("expert MLP received expired tensor storage");
     }
     const auto expectedDevice = backend_->device();
-    const auto validTensor = [&](tensor::TensorView view) {
+    const auto validActivation = [&](tensor::TensorView view) {
         return view && view.device() == expectedDevice && view.isContiguous() &&
                view.dtype() == tensor::DType::FP32 && view.shape().rank() == 2;
     };
-    if (!validTensor(input) || !validTensor(weights.gateProjection) ||
-        !validTensor(weights.upProjection) ||
-        !validTensor(weights.downProjection) || !validTensor(output) ||
-        !output.writable()) {
+    const auto validWeight = [&](
+        tensor::TensorView view,
+        const std::optional<tensor::quantization::QuantizationParameters>&
+            quantization) {
+        if (!view || view.device() != expectedDevice || !view.isContiguous() ||
+            view.shape().rank() != 2) {
+            return false;
+        }
+        if (view.dtype() == tensor::DType::FP32) return !quantization.has_value();
+        if (view.dtype() != tensor::DType::INT8 || !quantization) return false;
+        tensor::quantization::validateParameters(
+            tensor::quantization::QuantizedDType::INT8, *quantization);
+        return true;
+    };
+    if (!validActivation(input) ||
+        !validWeight(weights.gateProjection, weights.gateQuantization) ||
+        !validWeight(weights.upProjection, weights.upQuantization) ||
+        !validWeight(weights.downProjection, weights.downQuantization) ||
+        !validActivation(output) || !output.writable()) {
         throw std::invalid_argument(
-            "expert MLP requires contiguous rank-2 FP32 tensors on one backend");
+            "expert MLP requires FP32 activations and FP32 or metadata-backed INT8 weights on one backend");
     }
 
     const auto& inputShape = input.shape().dimensions();
@@ -78,19 +93,32 @@ void ExpertMlpExecutor::execute(tensor::TensorView input,
     auto gated = backend_->allocateTensor(intermediateShape, tensor::DType::FP32);
 
     std::chrono::steady_clock::duration projectionTime{};
+    const auto project = [&](tensor::TensorView source,
+                             tensor::TensorView weight,
+                             const std::optional<
+                                 tensor::quantization::QuantizationParameters>&
+                                 quantization,
+                             tensor::TensorView destination) {
+        if (weight.dtype() == tensor::DType::INT8) {
+            backend_->matmulInt8Weights(source, weight, *quantization,
+                                        destination);
+        } else {
+            backend_->matmul(source, weight, destination);
+        }
+    };
     auto projectionStart = std::chrono::steady_clock::now();
-    backend_->matmul(input, weights.gateProjection, gate);
+    project(input, weights.gateProjection, weights.gateQuantization, gate);
     projectionTime += std::chrono::steady_clock::now() - projectionStart;
 
     projectionStart = std::chrono::steady_clock::now();
-    backend_->matmul(input, weights.upProjection, up);
+    project(input, weights.upProjection, weights.upQuantization, up);
     projectionTime += std::chrono::steady_clock::now() - projectionStart;
 
     tensor::activation::apply(activation_, *backend_, gate, activated, profiler_);
     backend_->mul(activated, up, gated);
 
     projectionStart = std::chrono::steady_clock::now();
-    backend_->matmul(gated, weights.downProjection, output);
+    project(gated, weights.downProjection, weights.downQuantization, output);
     projectionTime += std::chrono::steady_clock::now() - projectionStart;
     if (profiler_) {
         profiler_->recordProjectionTime(projectionTime);

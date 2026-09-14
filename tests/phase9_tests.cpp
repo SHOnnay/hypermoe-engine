@@ -197,15 +197,16 @@ void testRealArtifactPipeline() {
     scheduler::ScheduleRequest request;
     request.layerId = 0;
     request.expertId = 0;
+    request.destination = MemoryTier::Ram;
     const auto loaded = scheduler->schedule(request).future().get();
-    expect(loaded.success && loaded.transfer.deviceBuffer,
-           "scheduler loads one packed expert through store and transfer manager");
+    expect(loaded.success && loaded.transfer.buffer && !loaded.transfer.deviceBuffer,
+           "scheduler loads one packed CPU expert into host RAM");
 
     MemoryManager memory(1U << 20U, 1U << 20U);
     ExpertManager manager(memory, std::make_unique<LruCachePolicy>());
     manager.registerExpert({0, 0, static_cast<std::size_t>(record->size),
                             QuantizationType::Fp32, MemoryTier::Nvme});
-    manager.adoptDeviceWeights(0, 0, loaded.transfer.deviceBuffer);
+    manager.adoptHostWeights(0, 0, loaded.transfer.buffer);
     scheduler->acquire(0, 0);
     const auto weightMap = makeWeightMap(packedManifest, 0, 0);
     auto tensorBackend = std::make_shared<tensor::CpuTensorBackend>();
@@ -214,7 +215,7 @@ void testRealArtifactPipeline() {
     const std::vector<float> hidden{1.0F, 0.5F};
     std::memcpy(input.data(), hidden.data(), hidden.size() * sizeof(float));
     {
-        auto lease = manager.acquireResidentExpert(0, 0);
+        auto lease = manager.acquireHostExpert(0, 0);
         const auto payload = lease.view({static_cast<std::size_t>(record->size)},
                                         tensor::DType::INT8);
         const auto views = weightMap.createViews(0, 0, payload, record->offset);

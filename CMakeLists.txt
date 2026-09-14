@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(HyperMoE VERSION 0.21.0 LANGUAGES CXX)
+project(HyperMoE VERSION 0.22.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -313,6 +313,10 @@ if(HYPERMOE_BUILD_TESTS)
     add_executable(hypermoe_phase21_tests tests/phase21_tests.cpp)
     target_link_libraries(hypermoe_phase21_tests PRIVATE HyperMoE::hypermoe)
     add_test(NAME hypermoe_phase21 COMMAND hypermoe_phase21_tests)
+
+    add_executable(hypermoe_phase22_tests tests/phase22_tests.cpp)
+    target_link_libraries(hypermoe_phase22_tests PRIVATE HyperMoE::hypermoe)
+    add_test(NAME hypermoe_phase22 COMMAND hypermoe_phase22_tests)
 endif()
 
 if(HYPERMOE_BUILD_BENCHMARKS)
@@ -397,6 +401,10 @@ if(HYPERMOE_BUILD_BENCHMARKS)
     add_executable(hypermoe_runtime_optimization_benchmark
         benchmarks/optimization/runtime_optimization_benchmark.cpp)
     target_link_libraries(hypermoe_runtime_optimization_benchmark PRIVATE HyperMoE::hypermoe)
+
+    add_executable(hypermoe_quantized_expert_benchmark
+        benchmarks/quantization/quantized_expert_benchmark.cpp)
+    target_link_libraries(hypermoe_quantized_expert_benchmark PRIVATE HyperMoE::hypermoe)
 
     add_executable(hypermoe_real_checkpoint_convert
         tools/model_convert/real_checkpoint/main.cpp)

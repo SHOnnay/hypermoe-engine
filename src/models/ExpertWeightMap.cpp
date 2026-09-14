@@ -69,8 +69,19 @@ ExpertMlpWeights ExpertWeightMap::createViews(
     std::uint64_t payloadFileOffset) const {
     const auto& binding = require(layerId, expertId);
     const auto makeView = [&](const TensorMetadata& metadata) {
-        if (metadata.isQuantized()) {
-            throw std::runtime_error("quantized expert execution is not implemented");
+        if (metadata.dtype == tensor::DType::INT8) {
+            if (metadata.quantizedDType !=
+                    tensor::quantization::QuantizedDType::INT8 ||
+                !metadata.quantizationParameters) {
+                throw std::invalid_argument(
+                    "INT8 expert projection is missing quantization metadata");
+            }
+            tensor::quantization::validateParameters(
+                tensor::quantization::QuantizedDType::INT8,
+                *metadata.quantizationParameters);
+        } else if (metadata.isQuantized()) {
+            throw std::invalid_argument(
+                "quantization metadata does not match expert projection dtype");
         }
         if (metadata.offset < payloadFileOffset) {
             throw std::invalid_argument("tensor offset precedes expert payload");
@@ -90,7 +101,10 @@ ExpertMlpWeights ExpertWeightMap::createViews(
                                         metadata.shape, metadata.dtype);
     };
     return {makeView(*binding.gateProjection), makeView(*binding.upProjection),
-            makeView(*binding.downProjection)};
+            makeView(*binding.downProjection),
+            binding.gateProjection->quantizationParameters,
+            binding.upProjection->quantizationParameters,
+            binding.downProjection->quantizationParameters};
 }
 
 } // namespace hypermoe::models

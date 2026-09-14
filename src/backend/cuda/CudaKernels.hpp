@@ -9,6 +9,10 @@ namespace hypermoe::backend::cuda::kernels {
 
 void activation(int type, const float* input, float* output,
                 std::size_t elements, StreamHandle stream);
+void int8WeightMatmul(const float* left, const std::int8_t* right,
+                      float* output, std::size_t rows, std::size_t inner,
+                      std::size_t columns, float scale,
+                      std::int32_t zeroPoint, StreamHandle stream);
 void rmsNorm(const float* input, const float* weight, float* output,
              std::size_t rows, std::size_t width, float epsilon,
              StreamHandle stream);

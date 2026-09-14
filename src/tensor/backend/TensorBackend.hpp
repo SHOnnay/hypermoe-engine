@@ -2,6 +2,7 @@
 
 #include "tensor/Tensor.hpp"
 #include "tensor/TensorView.hpp"
+#include "tensor/quantization/Quantization.hpp"
 
 #include <string_view>
 
@@ -19,6 +20,11 @@ public:
     virtual void matmul(TensorView left,
                         TensorView right,
                         TensorView output) = 0;
+    virtual void matmulInt8Weights(
+        TensorView left,
+        TensorView right,
+        const quantization::QuantizationParameters& parameters,
+        TensorView output) = 0;
     virtual void add(TensorView left,
                      TensorView right,
                      TensorView output) = 0;

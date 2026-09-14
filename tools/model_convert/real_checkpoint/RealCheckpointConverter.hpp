@@ -24,7 +24,8 @@ class RealCheckpointConverter {
 public:
     [[nodiscard]] RealCheckpointConversionReport convertQwen(
         const std::filesystem::path& checkpoint,
-        const std::filesystem::path& outputDirectory) const;
+        const std::filesystem::path& outputDirectory,
+        ExpertPackingOptions packingOptions = {}) const;
 };
 
 } // namespace hypermoe::conversion::real_checkpoint
