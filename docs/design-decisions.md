@@ -794,3 +794,23 @@ is redundant. `CudaBackend::waitEvent` now collects only finished transfer timin
 events using nonblocking queries, preserving timing accounting and avoiding an
 ever-growing event list. Device-wide synchronization remains teardown-only in
 this path. Native activation profiling also uses the compute-only boundary.
+
+## Why automatic sizing is opt-in and reservation-based
+
+The old 512MiB expert default must not silently change. Manual capacity stays
+backward-compatible; automatic sizing uses observed free memory after static
+loading and a second total-minus-static bound. Explicit KV/workspace/pool/safety
+headroom and transfer/alignment allowance prevent treating every free byte as
+expert capacity. Checked subtraction rejects unsafe plans before expert allocation.
+Cache growth includes old/new buffers, and auto caches/forward dimensions must
+fit their envelopes. This is not a guarantee against external GPU allocations
+or unlimited caller-retained traces; those risks remain documented.
+
+## Why age-aware residency stays in HybridPolicy
+
+Existing predictor probability/confidence already reaches the manager. A second
+predictor would duplicate state. The packed adaptive policy instead ages access
+frequency, recency and confidence-weighted hints deterministically; stale
+favorites no longer dominate forever. Protection is soft scoring, while execution
+leases remain hard exclusions. Legacy standalone Hybrid and LRU stay intact.
+Diagnostics return the eviction policy's real score, not a divergent estimate.

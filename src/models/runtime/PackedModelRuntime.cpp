@@ -34,6 +34,7 @@
 #include <cstring>
 #include <cmath>
 #include <limits>
+#include <mutex>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -41,6 +42,26 @@
 
 namespace hypermoe::models::runtime {
 namespace {
+
+std::size_t checkedMultiply(std::size_t left, std::size_t right) {
+    if (right != 0 && left > std::numeric_limits<std::size_t>::max() / right) {
+        throw std::overflow_error("expert device headroom accounting overflows");
+    }
+    return left * right;
+}
+
+std::size_t checkedAdd(std::size_t left, std::size_t right) {
+    if (right > std::numeric_limits<std::size_t>::max() - left) {
+        throw std::overflow_error("expert device headroom accounting overflows");
+    }
+    return left + right;
+}
+
+std::size_t growthSafeCacheBytes(const hypermoe::runtime::cache::KVCacheBase& cache) {
+    // During geometric growth old and expanded buffers coexist. Twice the
+    // maximum logical cache size conservatively covers that transient peak.
+    return checkedMultiply(cache.maximumMemoryUsageBytes(), 2U);
+}
 
 QuantizationType quantization(std::uint32_t value) {
     const auto result = static_cast<QuantizationType>(value);
@@ -149,6 +170,45 @@ struct PackedModelRuntime::Impl {
     std::shared_ptr<ModelRuntime> model;
     std::size_t staticStorageBytes{};
     std::size_t staticExecutionBytes{};
+    ExpertDeviceBudgetPlan expertDeviceBudget;
+    mutable std::mutex cacheReservationMutex;
+    std::vector<std::weak_ptr<hypermoe::runtime::cache::KVCacheBase>> reservedCaches;
+    std::size_t largestExpertBytes{};
+
+    void validateWorkspace(std::size_t tokens, std::size_t keys) const {
+        if (!configuration.automaticExpertDeviceBudget) return;
+        const auto& architecture = *manifest.runtimeArchitecture;
+        const auto projectionDimension = std::max(architecture.headDimension,
+                                                 architecture.projectionHeadDimension);
+        std::size_t intermediate = architecture.hiddenDimension;
+        for (const auto& expert : manifest.experts) {
+            for (const auto dimension : expert.gate.shape.dimensions()) {
+                intermediate = std::max(intermediate, dimension);
+            }
+        }
+        // Conservative single-forward envelope for retained layer tensors,
+        // QKV/context, scores+softmax, router/gather/scatter, logits and INT8
+        // conversion scratch. Wide projections and GQA use their own dimensions.
+        auto perToken = checkedMultiply(architecture.hiddenDimension,
+            checkedAdd(checkedMultiply(architecture.layerCount,
+                checkedAdd(5U, checkedMultiply(architecture.topK, 2U))), 16U));
+        perToken = checkedAdd(perToken, checkedMultiply(architecture.vocabularySize, 2U));
+        perToken = checkedAdd(perToken, checkedMultiply(
+            checkedMultiply(architecture.attentionHeads, projectionDimension), 8U));
+        perToken = checkedAdd(perToken, checkedMultiply(intermediate, 8U));
+        perToken = checkedAdd(perToken, checkedMultiply(architecture.expertCount, 4U));
+        auto required = checkedMultiply(checkedMultiply(perToken, tokens), sizeof(float));
+        required = checkedAdd(required, checkedMultiply(
+            checkedMultiply(checkedMultiply(architecture.attentionHeads, tokens), keys),
+            2U * sizeof(float)));
+        required = checkedAdd(required, checkedMultiply(
+            checkedMultiply(checkedMultiply(architecture.keyValueHeads, projectionDimension), keys),
+            8U * sizeof(float)));
+        required = checkedAdd(required, checkedMultiply(largestExpertBytes, 4U));
+        if (required > configuration.expertDeviceReservations.workspaceBytes) {
+            throw std::invalid_argument("forward dimensions exceed automatic expert budget workspace reservation");
+        }
+    }
 };
 
 void PackedRuntimeConfiguration::validate() const {
@@ -158,6 +218,9 @@ void PackedRuntimeConfiguration::validate() const {
         !std::isfinite(minimumPrefetchConfidence) ||
         minimumPrefetchConfidence < 0.0 || minimumPrefetchConfidence > 1.0) {
         throw std::invalid_argument("packed runtime configuration is invalid");
+    }
+    if (automaticExpertDeviceBudget && device.type != tensor::DeviceType::CUDA) {
+        throw std::invalid_argument("automatic expert device sizing requires CUDA; CPU residency remains RAM-only");
     }
 }
 
@@ -255,12 +318,31 @@ PackedModelRuntime::PackedModelRuntime(
     }
 
     impl_->store = std::make_shared<storage::ExpertStore>(artifact);
-    if (configuration.device.type == tensor::DeviceType::CUDA &&
-        configuration.expertDeviceBudgetBytes > impl_->transferBackend->getMemoryInfo().freeBytes) {
-        throw std::invalid_argument("expert VRAM budget exceeds free device memory after static tensor loading");
+    std::size_t largestExpertBytes{};
+    for (const auto& record : impl_->store->index().records()) {
+        if (record.size > std::numeric_limits<std::size_t>::max()) {
+            throw std::overflow_error("expert size exceeds addressable runtime memory");
+        }
+        largestExpertBytes = std::max(largestExpertBytes, static_cast<std::size_t>(record.size));
+    }
+    impl_->expertDeviceBudget.configuredBytes = configuration.expertDeviceBudgetBytes;
+    impl_->largestExpertBytes = largestExpertBytes;
+    impl_->expertDeviceBudget.effectiveBytes = configuration.expertDeviceBudgetBytes;
+    if (configuration.device.type == tensor::DeviceType::CUDA) {
+        // Cover worker-owned transfers plus per-expert pool alignment. The
+        // existing pool can ALSO retain 512MiB of released blocks, accounted
+        // separately by stagingPoolBytes. No additional transfer system.
+        const auto alignedLargest = checkedAdd(largestExpertBytes, 255U) / 256U * 256U;
+        const auto transferAllowance = checkedAdd(
+            checkedMultiply(alignedLargest, configuration.transferWorkers),
+            checkedMultiply(impl_->store->index().records().size(), 255U));
+        impl_->expertDeviceBudget = planExpertDeviceBudget(
+            configuration.expertDeviceBudgetBytes, configuration.automaticExpertDeviceBudget,
+            impl_->transferBackend->getMemoryInfo(), impl_->staticExecutionBytes,
+            configuration.expertDeviceReservations, largestExpertBytes, transferAllowance);
     }
     const auto executionBudget = configuration.device.type == tensor::DeviceType::CUDA
-        ? configuration.expertDeviceBudgetBytes : configuration.expertRamBudgetBytes;
+        ? impl_->expertDeviceBudget.effectiveBytes : configuration.expertRamBudgetBytes;
     for (const auto& record : impl_->store->index().records()) {
         if (record.size > executionBudget) {
             throw std::invalid_argument("expert execution budget cannot hold the largest indexed expert");
@@ -270,10 +352,10 @@ PackedModelRuntime::PackedModelRuntime(
     impl_->transfers = std::make_shared<TransferManager>(
         impl_->loader, impl_->transferBackend, configuration.transferWorkers);
     impl_->memory = std::make_unique<MemoryManager>(
-        configuration.expertDeviceBudgetBytes, configuration.expertRamBudgetBytes);
+        impl_->expertDeviceBudget.effectiveBytes, configuration.expertRamBudgetBytes);
     std::unique_ptr<CachePolicy> cachePolicy;
     if (configuration.adaptiveResidency) {
-        cachePolicy = std::make_unique<HybridPolicy>();
+        cachePolicy = std::make_unique<HybridPolicy>(true);
     } else {
         cachePolicy = std::make_unique<LruCachePolicy>();
     }
@@ -350,6 +432,7 @@ PackedModelRuntime::~PackedModelRuntime() = default;
 
 ModelForwardResult PackedModelRuntime::forward(
     std::span<const std::uint32_t> tokenIds, std::uint64_t sequencePosition) {
+    impl_->validateWorkspace(tokenIds.size(), tokenIds.size());
     hypermoe::runtime::InferenceContext context;
     context.batchSize = tokenIds.size();
     context.sequencePosition = sequencePosition;
@@ -363,6 +446,22 @@ ModelForwardResult PackedModelRuntime::forward(
 ModelForwardResult PackedModelRuntime::forward(
     std::span<const std::uint32_t> tokenIds, std::uint64_t sequencePosition,
     hypermoe::runtime::cache::KVCacheBase& cache) {
+    if (impl_->configuration.automaticExpertDeviceBudget) {
+        std::scoped_lock lock(impl_->cacheReservationMutex);
+        const auto registered = std::any_of(
+            impl_->reservedCaches.begin(), impl_->reservedCaches.end(),
+            [&cache](const auto& weak) { return weak.lock().get() == &cache; });
+        if (!registered) {
+            throw std::invalid_argument("automatic residency sizing requires a KV cache reserved by this packed runtime");
+        }
+    }
+    std::size_t pastTokens{};
+    if (impl_->configuration.automaticExpertDeviceBudget) {
+        for (std::size_t layer = 0; layer < cache.layerCount(); ++layer) {
+            pastTokens = std::max(pastTokens, cache.tokenCount(layer));
+        }
+    }
+    impl_->validateWorkspace(tokenIds.size(), checkedAdd(pastTokens, tokenIds.size()));
     hypermoe::runtime::InferenceContext context;
     context.batchSize = tokenIds.size();
     context.sequencePosition = sequencePosition;
@@ -380,9 +479,24 @@ PackedModelRuntime::createKVCache(std::size_t maximumSequenceLength) const {
         throw std::invalid_argument("KV cache sequence capacity must be nonzero");
     }
     if (device().type == tensor::DeviceType::CUDA) {
-        return std::make_shared<hypermoe::runtime::cache::CudaKVCache>(
+        auto cache = std::make_shared<hypermoe::runtime::cache::CudaKVCache>(
             impl_->tensors, architecture.layerCount, maximumSequenceLength,
             architecture.keyValueHeads, architecture.headDimension);
+        if (impl_->configuration.automaticExpertDeviceBudget) {
+            std::scoped_lock lock(impl_->cacheReservationMutex);
+            std::erase_if(impl_->reservedCaches, [](const auto& weak) { return weak.expired(); });
+            auto requested = growthSafeCacheBytes(*cache);
+            for (const auto& weak : impl_->reservedCaches) {
+                if (const auto existing = weak.lock()) {
+                    requested = checkedAdd(requested, growthSafeCacheBytes(*existing));
+                }
+            }
+            if (requested > impl_->configuration.expertDeviceReservations.kvCacheBytes) {
+                throw std::invalid_argument("KV cache capacities exceed automatic expert budget KV reservation (including growth headroom)");
+            }
+            impl_->reservedCaches.push_back(cache);
+        }
+        return cache;
     }
     return std::make_shared<hypermoe::runtime::cache::KVCache>(
         architecture.layerCount, maximumSequenceLength,
@@ -415,7 +529,8 @@ PackedRuntimeSnapshot PackedModelRuntime::snapshot() const {
             impl_->transferBackend->stats(), impl_->staticStorageBytes,
             impl_->staticExecutionBytes,
             cuda ? cuda->backendStats() : backend::BackendStats{},
-            impl_->configuration.transferComputeOverlap};
+            impl_->configuration.transferComputeOverlap,
+            impl_->expertDeviceBudget, impl_->transferBackend->getMemoryInfo()};
 }
 
 hypermoe::runtime::metrics::RuntimeMetricsSnapshot

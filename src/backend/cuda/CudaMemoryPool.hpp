@@ -52,8 +52,9 @@ private:
 
 class CudaMemoryPool {
 public:
+    static constexpr std::size_t defaultMaximumCachedBytes = 512ULL * 1024ULL * 1024ULL;
     explicit CudaMemoryPool(std::shared_ptr<ComputeBackend> backend,
-                            std::size_t maximumCachedBytes = 512ULL * 1024ULL * 1024ULL);
+                            std::size_t maximumCachedBytes = defaultMaximumCachedBytes);
     ~CudaMemoryPool();
 
     CudaMemoryPool(const CudaMemoryPool&) = delete;

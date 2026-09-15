@@ -532,6 +532,21 @@ warm cache, pool alignment/free blocks, static tensors, KV cache and execution
 temporaries are separate physical overhead. See
 [expert overlap](components/expert-overlap.md) for the measurement contract.
 
+## Phase 22C: safe expert capacity and aging
+
+Auto CUDA sizing runs after static loading and uses the tighter of sampled free
+VRAM and total-minus-static capacity. KV, workspace, staging/free-pool, safety
+and transfer/alignment reservations are removed before creating the existing
+`MemoryManager` limit. Manual defaults remain unchanged. Auto cache capacities
+and forward dimensions are checked against envelopes; this is startup sizing,
+not elastic arbitration of global GPU memory.
+
+Packed adaptive residency selects age-aware Hybrid: decayed frequency/recency
+and confidence-weighted, aging predictor hints determine eviction. Active leases
+remain protected. Diagnostics expose the actual score and successful device
+promotions. No scheduler/transfer/attention/INT8 architecture is replaced. See
+[adaptive residency](components/adaptive-residency.md).
+
 ## Deferred intentionally
 
 - GGUF readers and DeepSeek/GLM/Kimi/Mixtral artifact importers

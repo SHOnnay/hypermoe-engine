@@ -40,7 +40,8 @@ public:
     ExpertPipelineFixture(bool overlap, std::size_t deviceBudget,
                           std::size_t ramBudget, bool int8 = true,
                           std::shared_ptr<tensor::TensorBackend> tensorBackend = {},
-                          std::shared_ptr<backend::ComputeBackend> transferBackend = {})
+                          std::shared_ptr<backend::ComputeBackend> transferBackend = {},
+                          std::unique_ptr<CachePolicy> policy = {})
         : tensors(tensorBackend ? std::move(tensorBackend)
                                 : std::make_shared<tensor::CpuTensorBackend>()),
           compute(transferBackend ? std::move(transferBackend)
@@ -73,7 +74,7 @@ public:
         transfers = std::make_shared<TransferManager>(loader, compute, 2);
         memory = std::make_unique<MemoryManager>(deviceBudget, ramBudget);
         experts = std::make_unique<ExpertManager>(
-            *memory, std::make_unique<LruCachePolicy>(), transfers);
+            *memory, policy ? std::move(policy) : std::make_unique<LruCachePolicy>(), transfers);
         scheduler = std::make_shared<hypermoe::scheduler::Scheduler>(
             transfers, profiler, 2, MemoryTier::Ram, ramBudget);
         models::ExpertWeightMap mappings;

@@ -437,3 +437,16 @@ See [adaptive predictor](docs/components/adaptive-predictor.md) and
 `hypermoe_prediction_benchmark` for the deterministic predictor comparison, or
 `hypermoe_runtime_optimization_benchmark` with a packed artifact for measured
 baseline/adaptive runtime data.
+
+## Adaptive expert residency budgets (Phase 22C)
+
+Manual expert defaults remain 512MiB VRAM / 2GiB RAM, with the existing
+512MiB/1GiB/2GiB/4GiB CLI sweep. Opt-in automatic CUDA sizing reserves KV,
+workspace, staging/free-pool and safety headroom after static loading. Adaptive
+Hybrid residency ages popularity and predictor hints; LRU and standalone legacy
+Hybrid remain available. INT8, wide attention and Phase 22B overlap are preserved.
+
+See [adaptive residency](docs/components/adaptive-residency.md) for configuration,
+ownership limits, reports and Hermes RTX 4070 qualification. Run
+`hypermoe_residency_benchmark cpu report.json` for the tiny INT8 fixture, not
+real-model generation throughput.

@@ -52,6 +52,10 @@ struct RealModelProfile {
     std::uint64_t hostToDeviceBytes{};
     std::uint64_t synchronizationCount{};
     bool transferComputeOverlap{};
+    models::runtime::ExpertDeviceBudgetPlan expertDeviceBudgetPlan;
+    backend::MemoryInfo deviceMemory;
+    std::uint64_t vramPromotions{};
+    std::uint64_t expertPhysicalDeviceBytes{};
     std::map<std::string, std::uint64_t> expertFrequency;
 
     [[nodiscard]] std::string toJson() const;

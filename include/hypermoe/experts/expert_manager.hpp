@@ -82,6 +82,7 @@ struct ExpertManagerStats {
     std::uint64_t ramEvictions{};
     std::uint64_t nvmeBytesRead{};
     double simulatedLoadingLatencyMs{};
+    std::uint64_t vramPromotions{};
 
     [[nodiscard]] double vramHitRate() const noexcept;
 };

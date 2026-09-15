@@ -18,6 +18,10 @@ public:
     virtual void onEvict(ExpertId id, MemoryTier tier) = 0;
     virtual void setLayerProbability(ExpertId, double) {}
     virtual void setPrefetchConfidence(ExpertId, double) {}
+    // Optional diagnostic: return the score actually used by eviction.
+    [[nodiscard]] virtual std::optional<double> residencyScore(ExpertId) const noexcept {
+        return std::nullopt;
+    }
 
     [[nodiscard]] virtual std::optional<ExpertId>
     selectVictim(MemoryTier tier,

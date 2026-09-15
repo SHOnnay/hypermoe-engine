@@ -69,13 +69,27 @@ std::string RealModelProfile::toJson() const {
            << "  \"prefetch_misses\": " << prefetchMisses << ",\n"
            << "  \"prefetch_accuracy\": " << prefetchAccuracy << ",\n"
            << "  \"expert_device_budget_bytes\": " << expertDeviceBudgetBytes << ",\n"
+           << "  \"configured_expert_device_budget_bytes\": " << expertDeviceBudgetPlan.configuredBytes << ",\n"
+           << "  \"automatic_expert_device_budget\": " << (expertDeviceBudgetPlan.automatic ? "true" : "false") << ",\n"
+           << "  \"expert_device_reserved_bytes\": " << expertDeviceBudgetPlan.reservedBytes << ",\n"
+           << "  \"kv_cache_reservation_bytes\": " << expertDeviceBudgetPlan.reservations.kvCacheBytes << ",\n"
+           << "  \"cuda_workspace_reservation_bytes\": " << expertDeviceBudgetPlan.reservations.workspaceBytes << ",\n"
+           << "  \"cuda_staging_pool_reservation_bytes\": " << expertDeviceBudgetPlan.reservations.stagingPoolBytes << ",\n"
+           << "  \"cuda_safety_reservation_bytes\": " << expertDeviceBudgetPlan.reservations.safetyBytes << ",\n"
+           << "  \"expert_transfer_allowance_bytes\": " << expertDeviceBudgetPlan.transferAllowanceBytes << ",\n"
            << "  \"expert_ram_budget_bytes\": " << expertRamBudgetBytes << ",\n"
            << "  \"transfer_compute_overlap\": " << (transferComputeOverlap ? "true" : "false") << ",\n"
            << "  \"resident_expert_count\": " << residentExpertCount << ",\n"
            << "  \"device_resident_expert_count\": " << deviceResidentExpertCount << ",\n"
            << "  \"vram_evictions\": " << vramEvictions << ",\n"
+           << "  \"vram_promotions\": " << vramPromotions << ",\n"
            << "  \"ram_evictions\": " << ramEvictions << ",\n"
            << "  \"host_to_device_bytes\": " << hostToDeviceBytes << ",\n"
+           << "  \"ram_to_vram_transfer_bytes\": " << hostToDeviceBytes << ",\n"
+           << "  \"nvme_transfer_bytes\": " << expertTransferBytes << ",\n"
+           << "  \"expert_physical_device_bytes\": " << expertPhysicalDeviceBytes << ",\n"
+           << "  \"gpu_total_bytes\": " << deviceMemory.totalBytes << ",\n"
+           << "  \"gpu_free_bytes\": " << deviceMemory.freeBytes << ",\n"
            << "  \"synchronization_count\": " << synchronizationCount << ",\n"
            << "  \"gpu_utilization_percent\": null,\n"
            << "  \"expert_frequency\": {";
@@ -155,6 +169,16 @@ RealModelProfile RealModelProfileCollector::collect(
     result.expertDeviceBudgetBytes = runtime.expertMemory.vram.limitBytes;
     result.expertRamBudgetBytes = runtime.expertMemory.ram.limitBytes;
     result.transferComputeOverlap = runtime.transferComputeOverlap;
+    result.expertDeviceBudgetPlan = runtime.expertDeviceBudget;
+    if (result.expertDeviceBudgetPlan.configuredBytes == 0) {
+        result.expertDeviceBudgetPlan.configuredBytes = result.expertDeviceBudgetBytes;
+        result.expertDeviceBudgetPlan.effectiveBytes = result.expertDeviceBudgetBytes;
+    }
+    if (device.type == tensor::DeviceType::CUDA) {
+        result.deviceMemory = runtime.deviceMemory;
+        result.expertPhysicalDeviceBytes = runtime.transfers.allocatedBytes;
+    }
+    result.vramPromotions = runtime.experts.vramPromotions;
     result.vramEvictions = runtime.experts.vramEvictions;
     result.ramEvictions = runtime.experts.ramEvictions;
     result.hostToDeviceBytes = runtime.transfers.hostToDeviceBytes;

@@ -164,6 +164,7 @@ add_library(hypermoe
     src/models/runtime/TransformerModelRuntime.cpp
     src/models/runtime/ModelRuntime.cpp
     src/models/runtime/PackedModelRuntime.cpp
+    src/models/runtime/ExpertDeviceBudget.cpp
     src/models/metadata/JsonValue.cpp
     src/models/qwen/QwenMoEAdapter.cpp
     src/importer/SafeTensors.cpp
@@ -320,6 +321,9 @@ if(HYPERMOE_BUILD_TESTS)
     add_executable(hypermoe_phase22b_tests tests/phase22b_tests.cpp)
     target_link_libraries(hypermoe_phase22b_tests PRIVATE HyperMoE::hypermoe)
     add_test(NAME hypermoe_phase22b COMMAND hypermoe_phase22b_tests)
+    add_executable(hypermoe_phase22c_tests tests/phase22c_tests.cpp)
+    target_link_libraries(hypermoe_phase22c_tests PRIVATE HyperMoE::hypermoe)
+    add_test(NAME hypermoe_phase22c COMMAND hypermoe_phase22c_tests)
 endif()
 
 if(HYPERMOE_BUILD_BENCHMARKS)
@@ -399,6 +403,9 @@ if(HYPERMOE_BUILD_BENCHMARKS)
     add_executable(hypermoe_expert_pipeline_benchmark
         benchmarks/pipeline/expert_pipeline_benchmark.cpp)
     target_link_libraries(hypermoe_expert_pipeline_benchmark PRIVATE HyperMoE::hypermoe)
+    add_executable(hypermoe_residency_benchmark
+        benchmarks/residency/residency_benchmark.cpp)
+    target_link_libraries(hypermoe_residency_benchmark PRIVATE HyperMoE::hypermoe)
 
     add_executable(hypermoe_prediction_benchmark
         benchmarks/prediction/prediction_benchmark.cpp)

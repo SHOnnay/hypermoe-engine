@@ -104,7 +104,10 @@ They establish no consistent speedup and no RTX inference performance claim.
 Capacity changes and transfer accounting are deterministic for this trace.
 The supplied Hermes Phase 22A baseline is TTFT 42.4 s, 0.118 tokens/sec,
 8.70 GB expert transfers and 4.01% cache hits. Phase 22B real-model metrics are
-unmeasured until PC qualification; the microbenchmark is not a substitute.
+reported by Hermes as 0.089 tokens/sec, 55.6s latency with the same 8.70GB
+transfers and 4.01% cache hits. The microbenchmark is not a substitute. Phase
+22C adds [opt-in adaptive capacity](adaptive-residency.md), not another transfer
+implementation.
 
 Hermes qualification: build native CUDA Release/Debug, run all tests, compare
 serial vs overlap logits on the same INT8 artifact, then sweep budgets and record

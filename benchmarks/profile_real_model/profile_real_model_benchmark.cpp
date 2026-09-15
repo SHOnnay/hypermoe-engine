@@ -59,7 +59,10 @@ int main(int argc, char** argv) {
             std::cerr << "usage: hypermoe_profile_real_model <runtime-artifact> "
                          "<token-ids-csv> <cpu|cuda> [report.json] "
                          "[--expert-device-budget 512MiB] "
-                         "[--expert-ram-budget 2GiB] [--overlap on|off]\n";
+                         "[--expert-ram-budget 2GiB] [--overlap on|off] "
+                         "[--auto-expert-device-budget on|off] "
+                         "[--kv-reservation 256MiB] [--workspace-reservation 512MiB] "
+                         "[--staging-reservation 512MiB] [--safety-reservation 512MiB]\n";
             return 2;
         }
         const std::filesystem::path artifact = argv[1];
@@ -76,16 +79,23 @@ int main(int argc, char** argv) {
         for (int index = 4; index < argc; ++index) {
             const std::string_view option{argv[index]};
             if (option == "--expert-device-budget" || option == "--expert-ram-budget" ||
-                option == "--overlap") {
+                option == "--overlap" || option == "--auto-expert-device-budget" ||
+                option == "--kv-reservation" || option == "--workspace-reservation" ||
+                option == "--staging-reservation" || option == "--safety-reservation") {
                 if (++index >= argc) throw std::invalid_argument("benchmark option requires a value");
                 const std::string_view value{argv[index]};
-                if (option == "--overlap") {
-                    if (value != "on" && value != "off") throw std::invalid_argument("overlap must be on or off");
-                    configuration.transferComputeOverlap = value == "on";
+                if (option == "--overlap" || option == "--auto-expert-device-budget") {
+                    if (value != "on" && value != "off") throw std::invalid_argument("boolean benchmark option must be on or off");
+                    if (option == "--overlap") configuration.transferComputeOverlap = value == "on";
+                    else configuration.automaticExpertDeviceBudget = value == "on";
                 } else {
                     const auto bytes = decltype(configuration)::parseBudgetBytes(value);
                     if (option == "--expert-device-budget") configuration.expertDeviceBudgetBytes = bytes;
-                    else configuration.expertRamBudgetBytes = bytes;
+                    else if (option == "--expert-ram-budget") configuration.expertRamBudgetBytes = bytes;
+                    else if (option == "--kv-reservation") configuration.expertDeviceReservations.kvCacheBytes = bytes;
+                    else if (option == "--workspace-reservation") configuration.expertDeviceReservations.workspaceBytes = bytes;
+                    else if (option == "--staging-reservation") configuration.expertDeviceReservations.stagingPoolBytes = bytes;
+                    else configuration.expertDeviceReservations.safetyBytes = bytes;
                 }
             } else if (!option.starts_with("--") && !reportSpecified) {
                 reportPath = argv[index];

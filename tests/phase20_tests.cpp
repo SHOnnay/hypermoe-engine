@@ -272,6 +272,40 @@ void testCheckpointLoadingAndConversion() {
     expect(models::metadata::parseJson(cpuCuda.toJson()).isObject(),
            "CPU/CUDA validation report is valid JSON");
 
+    if (cpuCuda.cudaAvailable) {
+        models::runtime::PackedRuntimeConfiguration automatic;
+        automatic.device = tensor::Device::cuda();
+        automatic.automaticExpertDeviceBudget = true;
+        runtime::cache::KVCache sizing(
+            runtime.architecture().layerCount, tokenIds.size(),
+            runtime.architecture().keyValueHeads, runtime.architecture().headDimension);
+        automatic.expertDeviceReservations.kvCacheBytes = 2U * sizing.maximumMemoryUsageBytes();
+        models::runtime::PackedModelRuntime adaptive(packed, automatic);
+        const std::vector<std::uint32_t> oversizedPrompt(100000, 0);
+        expectThrows([&] { (void)adaptive.forward(oversizedPrompt); },
+                     "automatic workspace envelope rejects oversized prefill before device allocation");
+        auto reserved = adaptive.createKVCache(tokenIds.size());
+        expectThrows([&] { (void)adaptive.createKVCache(1); },
+                     "live CUDA cache capacities cannot overcommit automatic KV reservation");
+        expectThrows([&] { (void)adaptive.createKVCache(1000000); },
+                     "oversized CUDA cache rejected before allocating device storage");
+        const auto gpuForward = adaptive.forward(tokenIds, 0, *reserved);
+        const auto gpuTrace = validation::RealModelValidator::capture(adaptive, gpuForward);
+        expect(validation::RealModelValidator::compare(trace, gpuTrace).matches(),
+               "automatic expert sizing preserves full CPU/CUDA Qwen fixture correctness");
+        auto unreserved = runtime.createKVCache(tokenIds.size());
+        expectThrows([&] { (void)adaptive.forward(tokenIds, 0, *unreserved); },
+                     "unreserved external cache cannot consume automatic GPU KV headroom");
+        reserved.reset();
+        auto reused = adaptive.createKVCache(tokenIds.size());
+        expect(reused != nullptr, "released session capacity becomes reservable again");
+        const auto snapshot = adaptive.snapshot();
+        expect(snapshot.expertDeviceBudget.automatic &&
+                   snapshot.expertMemory.vram.limitBytes == snapshot.expertDeviceBudget.effectiveBytes &&
+                   snapshot.experts.vramPromotions > 0,
+               "automatic budget and promotion metrics reflect the production runtime");
+    }
+
     models::runtime::PackedModelRuntime incremental(packed);
     auto cache = incremental.createKVCache(tokenIds.size());
     std::vector<models::runtime::ModelForwardResult> forwards;

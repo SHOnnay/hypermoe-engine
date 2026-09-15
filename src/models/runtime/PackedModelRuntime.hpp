@@ -4,6 +4,7 @@
 #include "hypermoe/experts/expert_manager.hpp"
 #include "models/ModelManifest.hpp"
 #include "models/runtime/ModelRuntime.hpp"
+#include "models/runtime/ExpertDeviceBudget.hpp"
 #include "prediction/ExpertHistory.hpp"
 #include "profiling/Profiler.hpp"
 #include "runtime/cache/KVCache.hpp"
@@ -29,6 +30,8 @@ struct PackedRuntimeConfiguration {
     bool adaptiveResidency{true};
     double minimumPrefetchConfidence{0.20};
     bool transferComputeOverlap{true};
+    bool automaticExpertDeviceBudget{false};
+    ExpertDeviceReservations expertDeviceReservations;
 
     void validate() const;
     [[nodiscard]] static std::size_t parseBudgetBytes(std::string_view text);
@@ -46,6 +49,8 @@ struct PackedRuntimeSnapshot {
     std::size_t staticExecutionBytes{};
     backend::BackendStats tensorBackend;
     bool transferComputeOverlap{true};
+    ExpertDeviceBudgetPlan expertDeviceBudget;
+    backend::MemoryInfo deviceMemory;
 };
 
 class PackedModelRuntime {

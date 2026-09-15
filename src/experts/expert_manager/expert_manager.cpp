@@ -441,6 +441,7 @@ void ExpertManager::adoptDeviceWeights(
     managed.weights.reset();
     managed.deviceWeights = std::move(buffer);
     managed.metadata.location = MemoryTier::Vram;
+    ++stats_.vramPromotions;
     policy_->onResident(managed.policyId, MemoryTier::Vram);
     recordAccessLocked(managed);
 }
@@ -618,6 +619,7 @@ void ExpertManager::recordAccessLocked(ManagedExpert& expert) {
 
 double ExpertManager::residencyScoreLocked(
     const ManagedExpert& expert, std::uint64_t maximumUsage) const noexcept {
+    if (const auto score = policy_->residencyScore(expert.policyId)) return *score;
     const auto frequency = maximumUsage == 0
         ? 0.0
         : static_cast<double>(expert.usageCount) /
@@ -784,6 +786,7 @@ void ExpertManager::moveExpertLocked(LayerId layerId,
     managed.weights = std::move(destinationWeights);
     managed.deviceWeights = std::move(destinationDeviceWeights);
     managed.metadata.location = destination;
+    if (destination == MemoryTier::Vram) ++stats_.vramPromotions;
     policy_->onResident(managed.policyId, destination);
 }
 
