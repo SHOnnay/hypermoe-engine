@@ -47,7 +47,8 @@ public:
                std::shared_ptr<tensor::TensorBackend> tensorBackend,
                std::shared_ptr<ExpertMlpExecutor> executor,
                std::shared_ptr<prediction::ExpertHistory> history = {},
-               std::shared_ptr<prediction::ExpertPredictor> predictor = {});
+               std::shared_ptr<prediction::ExpertPredictor> predictor = {},
+               bool transferComputeOverlap = true);
 
     [[nodiscard]] LayerExecutionResult executeLayer(
         LayerId layerId,
@@ -71,6 +72,7 @@ private:
     std::shared_ptr<ExpertMlpExecutor> executor_;
     std::shared_ptr<prediction::ExpertHistory> history_;
     std::shared_ptr<prediction::ExpertPredictor> predictor_;
+    bool transferComputeOverlap_;
     std::unordered_map<std::uint64_t, std::uint64_t> payloadOffsets_;
     std::mutex executionMutex_;
 };

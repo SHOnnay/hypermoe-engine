@@ -511,6 +511,27 @@ bytes, wall-clock transfer duration, effective bandwidth, and whether CUDA handl
 the movement. Scheduler subscribers receive CUDA-specific transfer events in
 addition to tier-independent events.
 
+## Phase 22B transfer overlap and budgets
+
+Phase 22B removes the all-selected-experts transfer barrier in `MoERuntime`.
+Execution waits for one expert, adopts its completed buffer, holds a residency
+lease, prepares room for one lookahead expert, and submits that expert before
+executing the current one. If two payloads cannot fit, loading remains serial.
+The transfer manager owns transfer/prefetch streams and completion events;
+the tensor backend owns the compute stream. No device-wide wait is added.
+The transfer event is the readiness boundary; compute-stream completion is the
+lease-release boundary. Existing per-operation profiling waits remain.
+
+Packed-runtime statistical prefetch stages into RAM, with bounded speculative
+scheduler ownership, rather than independently accumulating VRAM buffers.
+Completed active results transfer ownership to `ExpertManager`; consumed
+futures and scheduler cache entries release their references. Scheduler metadata
+is reconciled against manager residency before requests after eviction.
+The expert budgets govern manager residency; pinned buffers, bounded speculative
+warm cache, pool alignment/free blocks, static tensors, KV cache and execution
+temporaries are separate physical overhead. See
+[expert overlap](components/expert-overlap.md) for the measurement contract.
+
 ## Deferred intentionally
 
 - GGUF readers and DeepSeek/GLM/Kimi/Mixtral artifact importers

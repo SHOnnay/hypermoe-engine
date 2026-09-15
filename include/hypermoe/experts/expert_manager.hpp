@@ -155,6 +155,10 @@ public:
     void adoptHostWeights(LayerId layerId,
                           ExpertId id,
                           std::shared_ptr<const std::vector<std::byte>> buffer);
+    // Single scheduling consumer: make room before launching a lookahead load.
+    // Active residency leases remain protected by the existing eviction policy.
+    void prepareResidency(LayerId layerId, ExpertId id, MemoryTier destination);
+    [[nodiscard]] MemorySnapshot memorySnapshot() const;
     [[nodiscard]] ExpertResidencyLease acquireResidentExpert(
             LayerId layerId, ExpertId id);
         [[nodiscard]] ExpertResidencyLease acquireHostExpert(

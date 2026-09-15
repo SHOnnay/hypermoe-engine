@@ -11,6 +11,7 @@
 #include "tensor/backend/CpuTensorBackend.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <climits>
 #include <cmath>
@@ -45,6 +46,7 @@ struct CudaTensorBackend::Impl {
     std::unique_ptr<backend::CudaStreamManager> streams;
     std::string backendName{"CUDA tensor backend unavailable"};
     bool ready{};
+    std::atomic_uint64_t profilingEventWaits{};
 #ifdef HYPERMOE_HAS_CUBLAS
     cublasHandle_t handle{};
 #endif
@@ -182,7 +184,9 @@ bool CudaTensorBackend::nativeKernelsAvailable() const noexcept {
 
 backend::BackendStats CudaTensorBackend::backendStats() const {
     if (!available()) throw std::runtime_error("CUDA tensor backend is unavailable");
-    return impl_->backend->stats();
+    auto result = impl_->backend->stats();
+    result.synchronizationCount += impl_->profilingEventWaits.load(std::memory_order_relaxed);
+    return result;
 }
 
 Tensor CudaTensorBackend::allocateTensor(const Shape& shape, DType dtype) {
@@ -294,6 +298,7 @@ void CudaTensorBackend::matmul(TensorView left,
                         "cublasSgemm");
             impl_->runtime->recordEvent(eventEnd, stream);
             impl_->runtime->synchronizeEvent(eventEnd);
+            impl_->profilingEventWaits.fetch_add(1, std::memory_order_relaxed);
             const auto milliseconds = static_cast<double>(
                 impl_->runtime->elapsedMilliseconds(eventStart, eventEnd));
             const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(

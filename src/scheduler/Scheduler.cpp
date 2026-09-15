@@ -24,10 +24,18 @@ const std::shared_future<ScheduleResult>& ScheduleHandle::future() const noexcep
 
 Scheduler::Scheduler(std::shared_ptr<TransferManager> transfers,
                      std::shared_ptr<Profiler> profiler,
-                     std::size_t workerCount)
-    : transfers_(std::move(transfers)), profiler_(std::move(profiler)) {
+                     std::size_t workerCount,
+                     MemoryTier prefetchDestination,
+                     std::size_t maximumPrefetchBytes)
+    : transfers_(std::move(transfers)), profiler_(std::move(profiler)),
+      prefetchDestination_(prefetchDestination),
+      maximumPrefetchBytes_(maximumPrefetchBytes) {
     if (!transfers_) throw std::invalid_argument("Scheduler requires a TransferManager");
     if (workerCount == 0) throw std::invalid_argument("Scheduler requires a worker");
+    if ((prefetchDestination != MemoryTier::Ram &&
+         prefetchDestination != MemoryTier::Vram) || maximumPrefetchBytes == 0) {
+        throw std::invalid_argument("invalid scheduler prefetch budget or tier");
+    }
     workers_.reserve(workerCount);
     for (std::size_t index = 0; index < workerCount; ++index) {
         workers_.emplace_back(&Scheduler::workerLoop, this);
@@ -81,6 +89,7 @@ ScheduleHandle Scheduler::schedule(ScheduleRequest request, ScheduleCallback cal
         }
 
         immediatelyReady =
+            existing == pendingByExpert_.end() &&
             !request.eviction && initialState.currentLocation == request.destination &&
             (initialState.state == ExpertLifecycleState::Ready ||
              initialState.state == ExpertLifecycleState::InUse);
@@ -147,7 +156,7 @@ ScheduleHandle Scheduler::prefetch(const PredictedExpertRequest& prediction,
     request.layerId = prediction.layerId;
     request.expertId = prediction.expertId;
     request.source = MemoryTier::Nvme;
-    request.destination = MemoryTier::Vram;
+    request.destination = prefetchDestination_;
     request.priority = TransferPriority::PredictedNextLayer;
     request.priorityScore =
         std::clamp(0.7 * prediction.probability + 0.3 * prediction.confidence,
@@ -194,6 +203,9 @@ void Scheduler::expirePrefetchesBefore(LayerId layerId) {
              current != prefetchedReady_.end();) {
             const auto prefetchedLayer = static_cast<LayerId>(*current >> 32U);
             if (prefetchedLayer < layerId) {
+                residentTransfers_.erase(*current);
+                states_.reconcile(prefetchedLayer,
+                                  static_cast<ExpertId>(*current), MemoryTier::Nvme);
                 current = prefetchedReady_.erase(current);
                 ++wasted;
             } else {
@@ -202,6 +214,40 @@ void Scheduler::expirePrefetchesBefore(LayerId layerId) {
         }
     }
     if (profiler_ && wasted != 0) profiler_->recordPrefetchWasted(wasted);
+}
+
+std::optional<TransferResult> Scheduler::cachedTransfer(LayerId layerId,
+                                                       ExpertId id) const {
+    std::scoped_lock lock(mutex_);
+    if (pendingByExpert_.contains(key(layerId, id))) return std::nullopt;
+    const auto found = residentTransfers_.find(key(layerId, id));
+    if (found == residentTransfers_.end()) return std::nullopt;
+    return found->second;
+}
+
+void Scheduler::acknowledgeResidency(LayerId layerId, ExpertId id,
+                                      MemoryTier location) {
+    std::scoped_lock lock(mutex_);
+    const auto expertKey = key(layerId, id);
+    if (pendingByExpert_.contains(expertKey)) {
+        throw std::logic_error("cannot adopt a pending scheduler transfer");
+    }
+    residentTransfers_.erase(expertKey);
+    if (prefetchedReady_.erase(expertKey) != 0 && profiler_) {
+        profiler_->recordPrefetchHit();
+        profiler_->recordPrefetchUseful();
+    }
+    states_.reconcile(layerId, id, location);
+}
+
+void Scheduler::reconcileResidency(LayerId layerId, ExpertId id,
+                                    MemoryTier location) {
+    std::scoped_lock lock(mutex_);
+    const auto expertKey = key(layerId, id);
+    if (!pendingByExpert_.contains(expertKey) &&
+        !residentTransfers_.contains(expertKey)) {
+        states_.reconcile(layerId, id, location);
+    }
 }
 
 RuntimeEventBus& Scheduler::events() noexcept { return events_; }
@@ -330,6 +376,14 @@ void Scheduler::workerLoop() {
             }
             states_.markReady(task->request.layerId, task->request.expertId,
                               task->request.destination);
+            if (profiler_) {
+                if (transferred.nvmeBytes != 0) profiler_->recordNvmeRead(transferred.nvmeBytes);
+                if (transferred.ramToVramBytes != 0) profiler_->recordRamToVram(transferred.ramToVramBytes);
+                profiler_->recordTransferTime(transferred.elapsed);
+                profiler_->recordNvmeReadTime(transferred.nvmeReadTime);
+                profiler_->recordRamCopyTime(transferred.ramCopyTime);
+                if (transferred.cudaTransfer) profiler_->recordCudaTransferTime(transferred.backendTransferTime);
+            }
             {
                 std::scoped_lock lock(mutex_);
                 const auto expertKey =
@@ -341,6 +395,30 @@ void Scheduler::workerLoop() {
                 }
                 if (task->prefetchRequest && !task->activeConsumer) {
                     prefetchedReady_.insert(expertKey);
+                    // Bound speculative ownership; active futures keep their
+                    // own result until the consumer adopts it.
+                    std::size_t cachedBytes{};
+                    std::vector<ExpertKey> candidates(prefetchedReady_.begin(),
+                                                       prefetchedReady_.end());
+                    std::sort(candidates.begin(), candidates.end());
+                    for (const auto candidate : candidates) {
+                        const auto found = residentTransfers_.find(candidate);
+                        if (found != residentTransfers_.end()) {
+                            const auto bytes = static_cast<std::size_t>(found->second.record.size);
+                            if (bytes > maximumPrefetchBytes_ - cachedBytes) {
+                                residentTransfers_.erase(found);
+                                prefetchedReady_.erase(candidate);
+                                if (candidate != expertKey) {
+                                    states_.reconcile(static_cast<LayerId>(candidate >> 32U),
+                                                      static_cast<ExpertId>(candidate),
+                                                      MemoryTier::Nvme);
+                                }
+                                if (profiler_) profiler_->recordPrefetchWasted();
+                            } else {
+                                cachedBytes += bytes;
+                            }
+                        }
+                    }
                 }
             }
             publish(RuntimeEventType::TransferCompleted, task->request,

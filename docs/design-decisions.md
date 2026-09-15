@@ -763,3 +763,34 @@ while accumulating an FP32 output. It is intentionally not a performance claim:
 tensor-core tiling, per-channel scales, and fusion require RTX measurements and
 belong to a later phase. Builds without native CUDA kernels fail this operation
 explicitly; they never silently route quantized device data through host staging.
+
+## Why Phase 22B uses one-expert lookahead
+
+Waiting for the whole routed set delays the first computation and can force
+eviction before any selected expert executes. One-expert lookahead bounds active
+transfer ownership and overlaps loading B with compute A without a second
+transfer implementation. The existing event-completed future provides a strict
+availability contract. The existing scatter/readback completion boundary keeps
+A's lease alive through GPU reads without adding a second compute wait or
+waiting for B. Hardware overlap is
+measured on CUDA, not inferred from CPU fixture timings.
+
+## Why residency and speculative ownership are distinct
+
+The manager is authoritative for capacity and eviction. A scheduler retaining
+every transferred device buffer defeats physical eviction even when logical
+accounting is correct. Consumers now acknowledge adoption and discard their
+completed handles; the scheduler reconciles evicted locations before requests.
+Packed-runtime prediction keeps a bounded warm RAM cache and promotes only
+selected experts. Standalone schedulers keep their existing default prefetch
+tier. The two existing budget fields retain their defaults and become CLI
+options, not automatic GPU-model-specific sizing.
+
+## Why transfer completion no longer waits twice
+
+An event recorded after the copy covers that copy and preserves pinned staging
+lifetime. A second stream synchronization can wait on unrelated later work and
+is redundant. `CudaBackend::waitEvent` now collects only finished transfer timing
+events using nonblocking queries, preserving timing accounting and avoiding an
+ever-growing event list. Device-wide synchronization remains teardown-only in
+this path. Native activation profiling also uses the compute-only boundary.

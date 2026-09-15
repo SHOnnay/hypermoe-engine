@@ -26,7 +26,8 @@ MoERuntime::MoERuntime(
     std::shared_ptr<tensor::TensorBackend> tensorBackend,
     std::shared_ptr<ExpertMlpExecutor> executor,
     std::shared_ptr<prediction::ExpertHistory> history,
-    std::shared_ptr<prediction::ExpertPredictor> predictor)
+    std::shared_ptr<prediction::ExpertPredictor> predictor,
+    bool transferComputeOverlap)
     : router_(std::move(router)),
       scheduler_(std::move(scheduler)),
       experts_(experts),
@@ -34,7 +35,8 @@ MoERuntime::MoERuntime(
       tensorBackend_(std::move(tensorBackend)),
       executor_(std::move(executor)),
       history_(std::move(history)),
-      predictor_(std::move(predictor)) {
+      predictor_(std::move(predictor)),
+      transferComputeOverlap_(transferComputeOverlap) {
     if (!router_ || !scheduler_ || !tensorBackend_ || !tensorBackend_->available() ||
         !executor_) {
         throw std::invalid_argument("MoE runtime dependencies must be available");
@@ -119,64 +121,6 @@ BatchLayerExecutionResult MoERuntime::executeBatch(
     }
     metadata.uniqueExperts = batches.size();
 
-    const auto schedulingStart = std::chrono::steady_clock::now();
-    std::vector<scheduler::ScheduleHandle> handles;
-    handles.reserve(batches.size());
-    for (const auto& batch : batches) {
-        const auto expert = experts_.findExpert(layerId, batch.expertId);
-        if (!expert) throw std::out_of_range("router selected an unregistered expert");
-        if (expert->location == MemoryTier::Vram) {
-            ++metadata.expertCacheHits;
-        } else {
-            ++metadata.expertCacheMisses;
-            if (metadata.expertTransferBytes >
-                std::numeric_limits<std::uint64_t>::max() - expert->sizeBytes) {
-                throw std::overflow_error("expert transfer byte count overflow");
-            }
-            metadata.expertTransferBytes += expert->sizeBytes;
-        }
-        if (metadata.expertPayloadBytes >
-            std::numeric_limits<std::uint64_t>::max() - expert->sizeBytes) {
-            throw std::overflow_error("expert payload byte count overflow");
-        }
-        metadata.expertPayloadBytes += expert->sizeBytes;
-        scheduler::ScheduleRequest request;
-        request.layerId = layerId;
-        request.expertId = batch.expertId;
-        request.source = expert->location;
-        request.destination = MemoryTier::Vram;
-        request.priority = scheduler::TransferPriority::ActiveInference;
-        handles.push_back(scheduler_->schedule(std::move(request)));
-    }
-
-    std::vector<std::uint64_t> payloadOffsets;
-    payloadOffsets.reserve(handles.size());
-    for (std::size_t index = 0; index < handles.size(); ++index) {
-        const auto& scheduled = handles[index].future().get();
-        const auto expertId = batches[index].expertId;
-        if (!scheduled.success) {
-            throw std::runtime_error("expert scheduling failed: " + scheduled.error);
-        }
-        if (scheduled.transfer.deviceBuffer) {
-            experts_.adoptDeviceWeights(layerId, expertId,
-                                        scheduled.transfer.deviceBuffer);
-            payloadOffsets.push_back(scheduled.transfer.record.offset);
-            payloadOffsets_[key(layerId, expertId)] = scheduled.transfer.record.offset;
-        } else {
-            const auto expert = experts_.findExpert(layerId, expertId);
-            if (!expert || expert->location != MemoryTier::Vram) {
-                throw std::logic_error("ready scheduler result has no resident expert");
-            }
-            const auto cached = payloadOffsets_.find(key(layerId, expertId));
-            if (cached == payloadOffsets_.end()) {
-                throw std::logic_error(
-                    "resident expert has no verified storage payload offset");
-            }
-            payloadOffsets.push_back(cached->second);
-        }
-    }
-    metadata.schedulingTime = std::chrono::steady_clock::now() - schedulingStart;
-
     const auto& firstBinding =
         weightMap_.require(layerId, batches.front().expertId);
     const auto& downShape = firstBinding.downProjection->shape.dimensions();
@@ -190,6 +134,51 @@ BatchLayerExecutionResult MoERuntime::executeBatch(
     auto output = tensorBackend_->allocateTensor(outputShape, tensor::DType::FP32);
     auto* cuda = dynamic_cast<tensor::CudaTensorBackend*>(tensorBackend_.get());
     const auto nativeCuda = cuda && cuda->nativeKernelsAvailable();
+    const auto deviceExecution = tensorBackend_->device().type == tensor::DeviceType::CUDA;
+    const auto destination = deviceExecution ? MemoryTier::Vram : MemoryTier::Ram;
+    std::vector<scheduler::ScheduleHandle> handles(batches.size());
+    const auto submit = [&](std::size_t index) {
+        const auto schedulingStart = std::chrono::steady_clock::now();
+        const auto expertId = batches[index].expertId;
+        auto expert = experts_.findExpert(layerId, expertId);
+        if (!expert) throw std::out_of_range("router selected an unregistered expert");
+        const auto predicted = scheduler_->state(layerId, expertId);
+        if (expert->location == MemoryTier::Nvme &&
+            predicted.targetLocation == MemoryTier::Ram &&
+            (predicted.state == scheduler::ExpertLifecycleState::Queued ||
+             predicted.state == scheduler::ExpertLifecycleState::Loading ||
+             predicted.state == scheduler::ExpertLifecycleState::Ready)) {
+            scheduler::ScheduleRequest warmRequest;
+            warmRequest.layerId = layerId;
+            warmRequest.expertId = expertId;
+            warmRequest.destination = MemoryTier::Ram;
+            const auto warmHandle = scheduler_->schedule(std::move(warmRequest));
+            const auto& warm = warmHandle.future().get();
+            if (!warm.success) {
+                throw std::runtime_error("warm expert scheduling failed: " + warm.error);
+            }
+        }
+        // Consume warm prediction results through the existing ownership path.
+        if (const auto warm = scheduler_->cachedTransfer(layerId, expertId);
+            warm && warm->buffer && expert->location == MemoryTier::Nvme) {
+            experts_.adoptHostWeights(layerId, expertId, warm->buffer);
+            payloadOffsets_[key(layerId, expertId)] = warm->record.offset;
+            scheduler_->acknowledgeResidency(layerId, expertId, MemoryTier::Ram);
+            expert = experts_.findExpert(layerId, expertId);
+        }
+        scheduler_->reconcileResidency(layerId, expertId, expert->location);
+        experts_.prepareResidency(layerId, expertId, destination);
+        scheduler::ScheduleRequest request;
+        request.layerId = layerId;
+        request.expertId = expertId;
+        request.source = expert->location;
+        request.destination = destination;
+        request.hostBuffer = experts_.residentWeights(layerId, expertId);
+        request.deviceBuffer = experts_.residentDeviceWeights(layerId, expertId);
+        handles[index] = scheduler_->schedule(std::move(request));
+        metadata.schedulingTime += std::chrono::steady_clock::now() - schedulingStart;
+    };
+    submit(0);
     tensor::CpuTensorBackend cpu;
     tensor::Tensor hostHidden;
     tensor::Tensor hostCombined;
@@ -212,27 +201,65 @@ BatchLayerExecutionResult MoERuntime::executeBatch(
     for (std::size_t index = 0; index < batches.size(); ++index) {
         const auto& batch = batches[index];
         const auto expertId = batch.expertId;
+        if (!handles[index].valid()) submit(index);
+        const auto schedulingStart = std::chrono::steady_clock::now();
+        // Wait ONLY for the expert being consumed, not the complete routed set.
+        const auto& scheduled = handles[index].future().get();
+        if (!scheduled.success) {
+            throw std::runtime_error("expert scheduling failed: " + scheduled.error);
+        }
+        const auto expertBefore = experts_.findExpert(layerId, expertId);
+        if (!expertBefore) throw std::logic_error("expert metadata disappeared");
+        if (expertBefore->location == destination) ++metadata.expertCacheHits;
+        else ++metadata.expertCacheMisses;
+        metadata.expertTransferBytes += deviceExecution
+            ? scheduled.transfer.ramToVramBytes : scheduled.transfer.nvmeBytes;
+        metadata.expertPayloadBytes += expertBefore->sizeBytes;
+        if (deviceExecution && scheduled.transfer.deviceBuffer) {
+            experts_.adoptDeviceWeights(layerId, expertId, scheduled.transfer.deviceBuffer);
+            payloadOffsets_[key(layerId, expertId)] = scheduled.transfer.record.offset;
+        } else if (!deviceExecution && scheduled.transfer.buffer) {
+            experts_.adoptHostWeights(layerId, expertId, scheduled.transfer.buffer);
+            payloadOffsets_[key(layerId, expertId)] = scheduled.transfer.record.offset;
+        }
+        scheduler_->acknowledgeResidency(layerId, expertId, destination);
+        const auto offset = payloadOffsets_.find(key(layerId, expertId));
+        if (offset == payloadOffsets_.end()) {
+            throw std::logic_error("resident expert has no verified storage payload offset");
+        }
+        const auto payloadOffset = offset->second;
+        handles[index] = {}; // Scheduler no longer retains evicted physical buffers.
+        metadata.schedulingTime += std::chrono::steady_clock::now() - schedulingStart;
         const auto expert = experts_.findExpert(layerId, expertId);
         if (!expert || expert->sizeBytes == 0) {
             throw std::logic_error("selected expert metadata disappeared");
         }
         scheduler_->acquire(layerId, expertId);
-                try {
-                    const auto expertStart = std::chrono::steady_clock::now();
-                    ExpertResidencyLease residency;
-                    const auto payload = [&]() -> tensor::TensorView {
-                        if (nativeCuda) {
-                            auto residency = experts_.acquireResidentExpert(layerId, expertId);
-                            return residency.view(
-                                tensor::Shape{expert->sizeBytes}, tensor::DType::INT8);
-                        } else {
-                            auto residency = experts_.acquireHostExpert(layerId, expertId);
-                            return residency.view(
-                                tensor::Shape{expert->sizeBytes}, tensor::DType::INT8);
-                        }
-                    }();
+        ExpertResidencyLease residency;
+        try {
+            const auto expertStart = std::chrono::steady_clock::now();
+            residency = deviceExecution
+                ? experts_.acquireResidentExpert(layerId, expertId)
+                : experts_.acquireHostExpert(layerId, expertId);
+            const auto payload = residency.view(
+                tensor::Shape{expert->sizeBytes}, tensor::DType::INT8);
+            if (transferComputeOverlap_ && index + 1 < batches.size()) {
+                const auto next = experts_.findExpert(layerId, batches[index + 1].expertId);
+                const auto nextState = scheduler_->state(layerId, batches[index + 1].expertId);
+                const auto unfinishedWarmLoad = next && next->location == MemoryTier::Nvme &&
+                    nextState.targetLocation == MemoryTier::Ram &&
+                    !scheduler_->cachedTransfer(layerId, next->id).has_value();
+                const auto memory = experts_.memorySnapshot();
+                const auto limit = deviceExecution ? memory.vram.limitBytes : memory.ram.limitBytes;
+                // Never require two experts to fit when the configured budget
+                // can hold only one. The current lease protects its allocation.
+                if (next && !unfinishedWarmLoad && expert->sizeBytes <= limit &&
+                    next->sizeBytes <= limit - expert->sizeBytes) {
+                    submit(index + 1);
+                }
+            }
             const auto weights = weightMap_.createViews(
-                layerId, expertId, payload, payloadOffsets[index]);
+                layerId, expertId, payload, payloadOffset);
             std::array<tensor::Tensor, 3> converted;
             ExpertMlpWeights executionWeights = weights;
             const auto prepare = [&](tensor::TensorView source,
@@ -298,9 +325,14 @@ BatchLayerExecutionResult MoERuntime::executeBatch(
             }
             metadata.expertCombinationTime +=
                 std::chrono::steady_clock::now() - combinationStart;
+            // scatterAddRows (native CUDA) or output readback (fallback)
+            // completes the compute dependency before returning. Keep the lease
+            // through that boundary; do not add a second compute-stream wait.
             expertOutputs.push_back(std::move(expertOutput));
             scheduler_->release(layerId, expertId);
         } catch (...) {
+            // Keep the lease alive through error-path completion as well.
+            if (deviceExecution) tensorBackend_->synchronizeExecution();
             scheduler_->release(layerId, expertId);
             throw;
         }

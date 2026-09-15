@@ -445,6 +445,22 @@ void ExpertManager::adoptDeviceWeights(
     recordAccessLocked(managed);
 }
 
+void ExpertManager::prepareResidency(LayerId layerId, ExpertId id,
+                                     MemoryTier destination) {
+    if (destination != MemoryTier::Ram && destination != MemoryTier::Vram) {
+        throw std::invalid_argument("expert preparation requires RAM or VRAM");
+    }
+    std::scoped_lock lock(mutex_);
+    const auto& expert = requireExpertLocked(layerId, id);
+    if (expert.metadata.location != destination) {
+        makeRoomLocked(destination, expert.metadata.sizeBytes, {expert.policyId});
+    }
+}
+
+MemorySnapshot ExpertManager::memorySnapshot() const {
+    return memory_.snapshot();
+}
+
 void ExpertManager::adoptHostWeights(
     LayerId layerId,
     ExpertId id,

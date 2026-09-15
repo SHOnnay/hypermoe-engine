@@ -19,6 +19,12 @@ and VRAM; the CPU reference and native CUDA backend produce FP32 activations by
 applying per-projection affine scales during GEMM. Floating-point artifacts and
 the CPU-only build remain supported.
 
+Phase 22B adds bounded one-expert lookahead on the existing transfer/scheduler
+path and exposes expert residency budgets in the real-model profiling command.
+The current expert remains leased through compute-stream completion; transfers
+for the next expert run independently. Defaults remain 512 MiB expert VRAM and
+2 GiB expert RAM. See [overlap and budget validation](docs/components/expert-overlap.md).
+
 Phase 14.5 hardens the same runtime contracts across 64-bit little-endian
 Windows, Linux, and macOS targets. It adds explicit wire-enum values, alignment
 validation for external tensor storage, safer empty/moved buffer behavior,
@@ -70,6 +76,10 @@ ctest --test-dir build --output-on-failure
   1,42,73 cpu_cuda_validation.json
 ./build/hypermoe_quantized_expert_benchmark \
   phase22_quantized_expert_report.json
+./build/hypermoe_expert_pipeline_benchmark cpu expert_pipeline_report.json
+./build/hypermoe_profile_real_model /path/to/int8-runtime-artifact \
+  1,42,73 cuda overlap_2g.json --expert-device-budget 2GiB \
+  --expert-ram-budget 2GiB --overlap on
 ```
 
 Enable runtime memory checks with:

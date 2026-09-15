@@ -68,6 +68,16 @@ std::string RealModelProfile::toJson() const {
            << "  \"prefetch_hits\": " << prefetchHits << ",\n"
            << "  \"prefetch_misses\": " << prefetchMisses << ",\n"
            << "  \"prefetch_accuracy\": " << prefetchAccuracy << ",\n"
+           << "  \"expert_device_budget_bytes\": " << expertDeviceBudgetBytes << ",\n"
+           << "  \"expert_ram_budget_bytes\": " << expertRamBudgetBytes << ",\n"
+           << "  \"transfer_compute_overlap\": " << (transferComputeOverlap ? "true" : "false") << ",\n"
+           << "  \"resident_expert_count\": " << residentExpertCount << ",\n"
+           << "  \"device_resident_expert_count\": " << deviceResidentExpertCount << ",\n"
+           << "  \"vram_evictions\": " << vramEvictions << ",\n"
+           << "  \"ram_evictions\": " << ramEvictions << ",\n"
+           << "  \"host_to_device_bytes\": " << hostToDeviceBytes << ",\n"
+           << "  \"synchronization_count\": " << synchronizationCount << ",\n"
+           << "  \"gpu_utilization_percent\": null,\n"
            << "  \"expert_frequency\": {";
     bool first = true;
     for (const auto& [expert, frequency] : expertFrequency) {
@@ -142,6 +152,18 @@ RealModelProfile RealModelProfileCollector::collect(
     const auto expertRam = runtime.expertMemory.ram.usedBytes;
     result.residentExpertDeviceBytes = expertDevice;
     result.residentExpertRamBytes = expertRam;
+    result.expertDeviceBudgetBytes = runtime.expertMemory.vram.limitBytes;
+    result.expertRamBudgetBytes = runtime.expertMemory.ram.limitBytes;
+    result.transferComputeOverlap = runtime.transferComputeOverlap;
+    result.vramEvictions = runtime.experts.vramEvictions;
+    result.ramEvictions = runtime.experts.ramEvictions;
+    result.hostToDeviceBytes = runtime.transfers.hostToDeviceBytes;
+    result.synchronizationCount = runtime.transfers.synchronizationCount +
+        runtime.tensorBackend.synchronizationCount;
+    for (const auto& expert : runtime.residency) {
+        if (expert.location != MemoryTier::Nvme) ++result.residentExpertCount;
+        if (expert.location == MemoryTier::Vram) ++result.deviceResidentExpertCount;
+    }
     if (device.type == tensor::DeviceType::CUDA) {
         result.vramUsageBytes = checkedAdd(
             checkedAdd(runtime.staticExecutionBytes, expertDevice), kvCacheBytes);

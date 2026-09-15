@@ -22,7 +22,6 @@ void ModelArchitecture::validate() const {
         expertCount == 0 || topK == 0 ||
         topK > expertCount || attentionHeads % keyValueHeads != 0 ||
         attentionHeads > std::numeric_limits<std::size_t>::max() / headDimension ||
-        attentionHeads * headDimension != hiddenDimension ||
         !std::isfinite(ropeTheta) || ropeTheta <= 0.0F) {
         throw std::invalid_argument("model architecture dimensions are invalid");
     }

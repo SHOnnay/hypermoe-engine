@@ -15,6 +15,8 @@
 #include <future>
 #include <memory>
 #include <mutex>
+#include <limits>
+#include <optional>
 #include <queue>
 #include <string>
 #include <thread>
@@ -73,7 +75,9 @@ class Scheduler {
 public:
     Scheduler(std::shared_ptr<TransferManager> transfers,
               std::shared_ptr<Profiler> profiler = {},
-              std::size_t workerCount = 2);
+              std::size_t workerCount = 2,
+              MemoryTier prefetchDestination = MemoryTier::Vram,
+              std::size_t maximumPrefetchBytes = std::numeric_limits<std::size_t>::max());
     ~Scheduler();
 
     Scheduler(const Scheduler&) = delete;
@@ -99,6 +103,10 @@ public:
     [[nodiscard]] ExpertState state(ExpertId id) const;
     [[nodiscard]] std::size_t pending() const;
     void expirePrefetchesBefore(LayerId layerId);
+    [[nodiscard]] std::optional<TransferResult> cachedTransfer(
+        LayerId layerId, ExpertId id) const;
+    void acknowledgeResidency(LayerId layerId, ExpertId id, MemoryTier location);
+    void reconcileResidency(LayerId layerId, ExpertId id, MemoryTier location);
     [[nodiscard]] RuntimeEventBus& events() noexcept;
     [[nodiscard]] const ExpertResidencyStateMachine& states() const noexcept;
     void shutdown();
@@ -147,6 +155,8 @@ private:
 
     std::shared_ptr<TransferManager> transfers_;
     std::shared_ptr<Profiler> profiler_;
+    MemoryTier prefetchDestination_;
+    std::size_t maximumPrefetchBytes_;
     ExpertResidencyStateMachine states_;
     RuntimeEventBus events_;
     mutable std::mutex mutex_;

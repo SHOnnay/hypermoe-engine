@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <memory>
 #include <span>
+#include <string_view>
 
 namespace hypermoe::models::runtime {
 
@@ -27,8 +28,10 @@ struct PackedRuntimeConfiguration {
     bool adaptivePrediction{true};
     bool adaptiveResidency{true};
     double minimumPrefetchConfidence{0.20};
+    bool transferComputeOverlap{true};
 
     void validate() const;
+    [[nodiscard]] static std::size_t parseBudgetBytes(std::string_view text);
 };
 
 struct PackedRuntimeSnapshot {
@@ -41,6 +44,8 @@ struct PackedRuntimeSnapshot {
     backend::BackendStats transfers;
     std::size_t staticStorageBytes{};
     std::size_t staticExecutionBytes{};
+    backend::BackendStats tensorBackend;
+    bool transferComputeOverlap{true};
 };
 
 class PackedModelRuntime {

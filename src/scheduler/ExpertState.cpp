@@ -141,6 +141,21 @@ void ExpertResidencyStateMachine::markFailed(LayerId layerId, ExpertId id) {
 
 void ExpertResidencyStateMachine::markFailed(ExpertId id) { markFailed(0, id); }
 
+void ExpertResidencyStateMachine::reconcile(LayerId layerId, ExpertId id,
+                                           MemoryTier location) {
+    std::scoped_lock lock(mutex_);
+    auto& expert = requireLocked(layerId, id);
+    if (expert.state == ExpertLifecycleState::InUse ||
+        expert.state == ExpertLifecycleState::Loading ||
+        expert.state == ExpertLifecycleState::Queued ||
+        expert.state == ExpertLifecycleState::Evicting) {
+        throw std::logic_error("cannot reconcile an active expert");
+    }
+    expert.currentLocation = location;
+    expert.targetLocation = location;
+    expert.state = ExpertLifecycleState::Ready;
+}
+
 ExpertState ExpertResidencyStateMachine::snapshot(LayerId layerId,
                                                    ExpertId id) const {
     std::scoped_lock lock(mutex_);

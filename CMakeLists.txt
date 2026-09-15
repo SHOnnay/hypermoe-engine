@@ -317,6 +317,9 @@ if(HYPERMOE_BUILD_TESTS)
     add_executable(hypermoe_phase22_tests tests/phase22_tests.cpp)
     target_link_libraries(hypermoe_phase22_tests PRIVATE HyperMoE::hypermoe)
     add_test(NAME hypermoe_phase22 COMMAND hypermoe_phase22_tests)
+    add_executable(hypermoe_phase22b_tests tests/phase22b_tests.cpp)
+    target_link_libraries(hypermoe_phase22b_tests PRIVATE HyperMoE::hypermoe)
+    add_test(NAME hypermoe_phase22b COMMAND hypermoe_phase22b_tests)
 endif()
 
 if(HYPERMOE_BUILD_BENCHMARKS)
@@ -393,6 +396,9 @@ if(HYPERMOE_BUILD_BENCHMARKS)
     add_executable(hypermoe_profile_real_model
         benchmarks/profile_real_model/profile_real_model_benchmark.cpp)
     target_link_libraries(hypermoe_profile_real_model PRIVATE HyperMoE::hypermoe)
+    add_executable(hypermoe_expert_pipeline_benchmark
+        benchmarks/pipeline/expert_pipeline_benchmark.cpp)
+    target_link_libraries(hypermoe_expert_pipeline_benchmark PRIVATE HyperMoE::hypermoe)
 
     add_executable(hypermoe_prediction_benchmark
         benchmarks/prediction/prediction_benchmark.cpp)

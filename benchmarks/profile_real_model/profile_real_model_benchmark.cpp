@@ -55,9 +55,11 @@ std::uint64_t parameterCount(const hypermoe::models::ModelManifest& manifest) {
 
 int main(int argc, char** argv) {
     try {
-        if (argc < 4 || argc > 5) {
+        if (argc < 4) {
             std::cerr << "usage: hypermoe_profile_real_model <runtime-artifact> "
-                         "<token-ids-csv> <cpu|cuda> [report.json]\n";
+                         "<token-ids-csv> <cpu|cuda> [report.json] "
+                         "[--expert-device-budget 512MiB] "
+                         "[--expert-ram-budget 2GiB] [--overlap on|off]\n";
             return 2;
         }
         const std::filesystem::path artifact = argv[1];
@@ -69,6 +71,30 @@ int main(int argc, char** argv) {
         } else if (deviceName != "cpu") {
             throw std::invalid_argument("benchmark device must be cpu or cuda");
         }
+        std::filesystem::path reportPath{"real_model_profile.json"};
+        bool reportSpecified{};
+        for (int index = 4; index < argc; ++index) {
+            const std::string_view option{argv[index]};
+            if (option == "--expert-device-budget" || option == "--expert-ram-budget" ||
+                option == "--overlap") {
+                if (++index >= argc) throw std::invalid_argument("benchmark option requires a value");
+                const std::string_view value{argv[index]};
+                if (option == "--overlap") {
+                    if (value != "on" && value != "off") throw std::invalid_argument("overlap must be on or off");
+                    configuration.transferComputeOverlap = value == "on";
+                } else {
+                    const auto bytes = decltype(configuration)::parseBudgetBytes(value);
+                    if (option == "--expert-device-budget") configuration.expertDeviceBudgetBytes = bytes;
+                    else configuration.expertRamBudgetBytes = bytes;
+                }
+            } else if (!option.starts_with("--") && !reportSpecified) {
+                reportPath = argv[index];
+                reportSpecified = true;
+            } else {
+                throw std::invalid_argument("unknown benchmark option or extra report path");
+            }
+        }
+        configuration.validate();
         const auto loadingStarted = std::chrono::steady_clock::now();
         hypermoe::models::runtime::PackedModelRuntime runtime(
             artifact, configuration);
@@ -86,8 +112,7 @@ int main(int argc, char** argv) {
             runtime.manifest(), parameterCount(runtime.manifest()), runtime.device(),
             forwards, runtime.snapshot(), cache->memoryUsageBytes(), wallTime);
         profile.modelLoadingTime = loadingTime;
-        const std::filesystem::path reportPath =
-            argc == 5 ? argv[4] : "real_model_profile.json";
+        profile.transferComputeOverlap = configuration.transferComputeOverlap;
         std::ofstream output(reportPath, std::ios::binary | std::ios::trunc);
         const auto json = profile.toJson();
         output.write(json.data(), static_cast<std::streamsize>(json.size()));

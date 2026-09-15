@@ -69,7 +69,7 @@ void apply(ActivationType type,
             cuda->applyActivation(type == ActivationType::SiLU ? 0 : 1,
                                   input, output);
             if (profiler) {
-                backend.synchronize();
+                backend.synchronizeExecution();
                 profiler->recordActivationTime(
                     std::chrono::steady_clock::now() - start);
             }

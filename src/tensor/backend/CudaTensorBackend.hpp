@@ -69,6 +69,8 @@ public:
                          std::uint64_t keyPositionOffset, bool causal);
     void gatherRows(TensorView input, std::span<const std::size_t> rows,
                     TensorView output);
+    // Completes its compute-stream dependency before returning, protecting
+    // temporary index/weight buffers and permitting residency lease release.
     void scatterAddRows(TensorView input, std::span<const std::size_t> rows,
                         std::span<const float> weights, TensorView output);
     void zero(TensorView output);

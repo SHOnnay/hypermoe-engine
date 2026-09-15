@@ -30,6 +30,7 @@
 #include "transformer/norm/RMSNorm.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <cstring>
 #include <cmath>
 #include <limits>
@@ -110,12 +111,6 @@ void recordExecution(Profiler& profiler,
         for (std::size_t index = 0; index < layer.execution.expertCacheMisses; ++index) {
             profiler.recordExpertRequest(false);
         }
-        if (layer.execution.expertTransferBytes != 0) {
-            profiler.recordNvmeRead(layer.execution.expertTransferBytes);
-            if (device.type == tensor::DeviceType::CUDA) {
-                profiler.recordRamToVram(layer.execution.expertTransferBytes);
-            }
-        }
     }
     const auto staticVram = device.type == tensor::DeviceType::CUDA ? staticBytes : 0;
     const auto staticRam = device.type == tensor::DeviceType::CPU ? staticBytes : 0;
@@ -164,6 +159,32 @@ void PackedRuntimeConfiguration::validate() const {
         minimumPrefetchConfidence < 0.0 || minimumPrefetchConfidence > 1.0) {
         throw std::invalid_argument("packed runtime configuration is invalid");
     }
+}
+
+std::size_t PackedRuntimeConfiguration::parseBudgetBytes(std::string_view text) {
+    if (text.empty()) {
+        throw std::invalid_argument("expert budget cannot be empty");
+    }
+    std::size_t value{};
+    const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (error != std::errc{} || end == text.data() || value == 0) {
+        throw std::invalid_argument("expert budget must be a positive integer with an optional unit");
+    }
+    const std::string_view suffix{end, static_cast<std::size_t>(text.data() + text.size() - end)};
+    std::size_t multiplier{1};
+    if (suffix == "KiB") multiplier = 1024U;
+    else if (suffix == "MiB") multiplier = 1024U * 1024U;
+    else if (suffix == "GiB") multiplier = 1024U * 1024U * 1024U;
+    else if (suffix == "KB") multiplier = 1000U;
+    else if (suffix == "MB") multiplier = 1000U * 1000U;
+    else if (suffix == "GB") multiplier = 1000U * 1000U * 1000U;
+    else if (!suffix.empty() && suffix != "B") {
+        throw std::invalid_argument("expert budget unit must be B, KB, MB, GB, KiB, MiB, or GiB");
+    }
+    if (value > std::numeric_limits<std::size_t>::max() / multiplier) {
+        throw std::overflow_error("expert budget exceeds addressable memory");
+    }
+    return value * multiplier;
 }
 
 PackedModelRuntime::PackedModelRuntime(
@@ -234,6 +255,17 @@ PackedModelRuntime::PackedModelRuntime(
     }
 
     impl_->store = std::make_shared<storage::ExpertStore>(artifact);
+    if (configuration.device.type == tensor::DeviceType::CUDA &&
+        configuration.expertDeviceBudgetBytes > impl_->transferBackend->getMemoryInfo().freeBytes) {
+        throw std::invalid_argument("expert VRAM budget exceeds free device memory after static tensor loading");
+    }
+    const auto executionBudget = configuration.device.type == tensor::DeviceType::CUDA
+        ? configuration.expertDeviceBudgetBytes : configuration.expertRamBudgetBytes;
+    for (const auto& record : impl_->store->index().records()) {
+        if (record.size > executionBudget) {
+            throw std::invalid_argument("expert execution budget cannot hold the largest indexed expert");
+        }
+    }
     impl_->loader = std::make_shared<storage::DiskLoader>(impl_->store);
     impl_->transfers = std::make_shared<TransferManager>(
         impl_->loader, impl_->transferBackend, configuration.transferWorkers);
@@ -248,7 +280,8 @@ PackedModelRuntime::PackedModelRuntime(
     impl_->experts = std::make_unique<ExpertManager>(
         *impl_->memory, std::move(cachePolicy), impl_->transfers);
     impl_->scheduler = std::make_shared<scheduler::Scheduler>(
-        impl_->transfers, impl_->profiler, configuration.schedulerWorkers);
+        impl_->transfers, impl_->profiler, configuration.schedulerWorkers,
+        MemoryTier::Ram, configuration.expertRamBudgetBytes);
     for (const auto& record : impl_->store->index().records()) {
         if (record.size > std::numeric_limits<std::size_t>::max()) {
             throw std::overflow_error("expert size exceeds addressable runtime memory");
@@ -280,7 +313,8 @@ PackedModelRuntime::PackedModelRuntime(
     impl_->moeRuntime = std::make_shared<hypermoe::runtime::MoERuntime>(
         impl_->router, impl_->scheduler, *impl_->experts,
         makeExpertMappings(impl_->manifest), impl_->tensors,
-        impl_->expertExecutor, impl_->history, impl_->predictor);
+        impl_->expertExecutor, impl_->history, impl_->predictor,
+        configuration.transferComputeOverlap);
     impl_->moe = std::make_shared<transformer::MoELayer>(
         impl_->moeRuntime, impl_->tensors);
     if (configuration.device.type == tensor::DeviceType::CUDA) {
@@ -372,13 +406,16 @@ tensor::Tensor PackedModelRuntime::materializeHost(tensor::TensorView value) con
 }
 
 PackedRuntimeSnapshot PackedModelRuntime::snapshot() const {
+    const auto* cuda = dynamic_cast<const tensor::CudaTensorBackend*>(impl_->tensors.get());
     return {impl_->memory->snapshot(), impl_->experts->stats(),
             impl_->profiler->snapshot(), impl_->history->snapshot(),
             impl_->predictor ? impl_->predictor->qualitySnapshot()
                              : prediction::PredictionQualitySnapshot{},
             impl_->experts->residencySnapshot(),
             impl_->transferBackend->stats(), impl_->staticStorageBytes,
-            impl_->staticExecutionBytes};
+            impl_->staticExecutionBytes,
+            cuda ? cuda->backendStats() : backend::BackendStats{},
+            impl_->configuration.transferComputeOverlap};
 }
 
 hypermoe::runtime::metrics::RuntimeMetricsSnapshot

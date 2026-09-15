@@ -235,7 +235,6 @@ void TransferManager::workerLoop() {
                                              pinned->size(), stream);
                     backend_->recordEvent(completion, stream);
                     backend_->waitEvent(completion);
-                    backend_->synchronize(stream);
                     result.backendTransferTime =
                         std::chrono::steady_clock::now() - transferStart;
                     result.cudaTransfer = backend_->kind() == backend::BackendKind::Cuda;
@@ -277,7 +276,6 @@ void TransferManager::workerLoop() {
                                              pinned->size(), stream);
                     backend_->recordEvent(completion, stream);
                     backend_->waitEvent(completion);
-                    backend_->synchronize(stream);
                     result.backendTransferTime =
                         std::chrono::steady_clock::now() - transferStart;
                     result.cudaTransfer = backend_->kind() == backend::BackendKind::Cuda;
@@ -340,7 +338,6 @@ void TransferManager::workerLoop() {
                 backend_->copyToDevice(device->data(), staging->data(), staging->size(), stream);
                 backend_->recordEvent(completion, stream);
                 backend_->waitEvent(completion);
-                backend_->synchronize(stream);
                 result.backendTransferTime =
                     std::chrono::steady_clock::now() - transferStart;
                 result.ramToVramBytes = loaded.record.size;

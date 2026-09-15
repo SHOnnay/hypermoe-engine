@@ -55,6 +55,12 @@ void collectTimings(CudaBackend::Impl& impl, cudaStream_t selected, bool all) {
             ++current;
             continue;
         }
+        // A completion event may cover only a prefix of a shared stream.
+        // Do not wait for, or discard, timings submitted after that event.
+        if (cudaEventQuery(current->end) != cudaSuccess) {
+            ++current;
+            continue;
+        }
         float milliseconds = 0.0F;
         if (cudaEventElapsedTime(&milliseconds, current->start, current->end) == cudaSuccess) {
             impl.statistics.transferTime += std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -275,6 +281,11 @@ void CudaBackend::recordEvent(EventHandle event, StreamHandle stream) {
 
 void CudaBackend::waitEvent(EventHandle event) {
     impl_->runtime->synchronizeEvent(event);
+#ifdef HYPERMOE_HAS_CUDA
+    collectTimings(*impl_, nullptr, true);
+    std::scoped_lock lock(impl_->mutex);
+    ++impl_->statistics.synchronizationCount;
+#endif
 }
 
 void CudaBackend::destroyEvent(EventHandle event) noexcept {

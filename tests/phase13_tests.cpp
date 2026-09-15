@@ -389,7 +389,7 @@ void testCompleteQwenRuntime() {
                    models::TensorLayout::OutputInput,
            "Qwen importer maps complete architecture and transformer tensor roles");
     auto invalid = *sourceManifest.runtimeArchitecture;
-    invalid.attentionHeads = 3;
+    invalid.keyValueHeads = 3;
     expectThrows([&] { invalid.validate(); },
                  "model architecture rejects incompatible head dimensions");
 

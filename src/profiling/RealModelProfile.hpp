@@ -43,6 +43,15 @@ struct RealModelProfile {
     std::uint64_t prefetchHits{};
     std::uint64_t prefetchMisses{};
     double prefetchAccuracy{};
+    std::size_t expertDeviceBudgetBytes{};
+    std::size_t expertRamBudgetBytes{};
+    std::size_t residentExpertCount{};
+    std::size_t deviceResidentExpertCount{};
+    std::uint64_t vramEvictions{};
+    std::uint64_t ramEvictions{};
+    std::uint64_t hostToDeviceBytes{};
+    std::uint64_t synchronizationCount{};
+    bool transferComputeOverlap{};
     std::map<std::string, std::uint64_t> expertFrequency;
 
     [[nodiscard]] std::string toJson() const;

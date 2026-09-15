@@ -54,6 +54,7 @@ public:
     void beginEviction(ExpertId id, MemoryTier target);
     void markFailed(LayerId layerId, ExpertId id);
     void markFailed(ExpertId id);
+    void reconcile(LayerId layerId, ExpertId id, MemoryTier location);
 
     [[nodiscard]] ExpertState snapshot(LayerId layerId, ExpertId id) const;
     [[nodiscard]] ExpertState snapshot(ExpertId id) const;
