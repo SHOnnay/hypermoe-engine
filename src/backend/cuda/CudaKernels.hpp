@@ -13,6 +13,12 @@ void int8WeightMatmul(const float* left, const std::int8_t* right,
                       float* output, std::size_t rows, std::size_t inner,
                       std::size_t columns, float scale,
                       std::int32_t zeroPoint, StreamHandle stream);
+void int8WeightMatmulCooperative(const float* left, const std::int8_t* right,
+                                 float* output, float* partials,
+                                 std::size_t rows, std::size_t inner,
+                                 std::size_t columns, std::size_t partitions,
+                                 float scale, std::int32_t zeroPoint,
+                                 StreamHandle stream);
 void rmsNorm(const float* input, const float* weight, float* output,
              std::size_t rows, std::size_t width, float epsilon,
              StreamHandle stream);

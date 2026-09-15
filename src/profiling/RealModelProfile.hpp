@@ -57,6 +57,10 @@ struct RealModelProfile {
     std::uint64_t vramPromotions{};
     std::uint64_t expertPhysicalDeviceBytes{};
     std::map<std::string, std::uint64_t> expertFrequency;
+    ProfilerSnapshot gpuTimings;
+    std::chrono::nanoseconds synchronizationTime{};
+    std::chrono::nanoseconds cudaMemoryTransferTime{};
+    std::string int8GemmMode{"auto"};
 
     [[nodiscard]] std::string toJson() const;
 };

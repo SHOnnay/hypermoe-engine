@@ -25,6 +25,14 @@ The current expert remains leased through compute-stream completion; transfers
 for the next expert run independently. Defaults remain 512 MiB expert VRAM and
 2 GiB expert RAM. See [overlap and budget validation](docs/components/expert-overlap.md).
 
+Phase 23 adds cooperative INT8 expert GEMM with bounded pool-backed split-K
+scratch, deferred CUDA event profiling, and tensor-copy stream dependencies.
+Scalar INT8 and CPU paths remain available; residency budgets and Qwen3 wide
+attention/GQA metadata are unchanged. Compare implementations with
+`hypermoe_int8_gemm_benchmark` and the existing real-model profiler's
+`--int8-gemm reference|cooperative|auto` option. Native performance is not
+claimed without hardware measurements. See [GPU compute audit and validation](docs/components/gpu-compute.md).
+
 Phase 14.5 hardens the same runtime contracts across 64-bit little-endian
 Windows, Linux, and macOS targets. It adds explicit wire-enum values, alignment
 validation for external tensor storage, safer empty/moved buffer behavior,

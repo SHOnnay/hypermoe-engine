@@ -189,6 +189,31 @@ void CudaRuntime::synchronizeEvent(EventHandle event) {
 #endif
 }
 
+bool CudaRuntime::eventComplete(EventHandle event) const {
+    if (!available() || event == nullptr) throw std::invalid_argument("CUDA event is unavailable");
+#ifdef HYPERMOE_HAS_CUDA
+    checkCuda(cudaSetDevice(impl_->device), "cudaSetDevice");
+    const auto result = cudaEventQuery(nativeEvent(event));
+    if (result == cudaErrorNotReady) return false;
+    checkCuda(result, "cudaEventQuery");
+    return true;
+#else
+    throw std::runtime_error("CUDA support is unavailable");
+#endif
+}
+
+void CudaRuntime::waitStreamEvent(StreamHandle stream, EventHandle event) {
+    if (!available() || stream == nullptr || event == nullptr) {
+        throw std::invalid_argument("CUDA stream dependency is unavailable");
+    }
+#ifdef HYPERMOE_HAS_CUDA
+    checkCuda(cudaSetDevice(impl_->device), "cudaSetDevice");
+    checkCuda(cudaStreamWaitEvent(nativeStream(stream), nativeEvent(event), 0), "cudaStreamWaitEvent");
+#else
+    throw std::runtime_error("CUDA support is unavailable");
+#endif
+}
+
 float CudaRuntime::elapsedMilliseconds(EventHandle start, EventHandle end) const {
     if (!available() || start == nullptr || end == nullptr) {
         throw std::invalid_argument("timed CUDA events are unavailable");

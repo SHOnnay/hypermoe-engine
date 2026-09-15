@@ -92,6 +92,25 @@ std::string RealModelProfile::toJson() const {
            << "  \"gpu_free_bytes\": " << deviceMemory.freeBytes << ",\n"
            << "  \"synchronization_count\": " << synchronizationCount << ",\n"
            << "  \"gpu_utilization_percent\": null,\n"
+           << "  \"int8_gemm_mode\": \"" << escape(int8GemmMode) << "\",\n"
+           << "  \"cuda_timing_samples\": " << gpuTimings.cudaTimingSamples << ",\n"
+           << "  \"cuda_kernel_time_ms\": " << milliseconds(gpuTimings.cudaKernelTime) << ",\n"
+           << "  \"cuda_fp32_gemm_time_ms\": " << milliseconds(gpuTimings.cudaFp32GemmTime) << ",\n"
+           << "  \"cuda_int8_gemm_time_ms\": " << milliseconds(gpuTimings.cudaInt8GemmTime) << ",\n"
+           << "  \"cuda_expert_gemm_time_ms\": " << milliseconds(gpuTimings.cudaExpertGemmTime) << ",\n"
+           << "  \"cuda_activation_time_ms\": " << milliseconds(gpuTimings.cudaActivationTime) << ",\n"
+           << "  \"cuda_attention_core_time_ms\": " << milliseconds(gpuTimings.cudaAttentionCoreTime) << ",\n"
+           << "  \"cuda_other_operations_time_ms\": " << milliseconds(gpuTimings.cudaKernelTime -
+               gpuTimings.cudaFp32GemmTime - gpuTimings.cudaInt8GemmTime -
+               gpuTimings.cudaActivationTime - gpuTimings.cudaAttentionCoreTime) << ",\n"
+           << "  \"cuda_attention_time_ms\": " << milliseconds(gpuTimings.cudaAttentionTime) << ",\n"
+           << "  \"cuda_expert_execution_time_ms\": " << milliseconds(gpuTimings.cudaExpertExecutionTime) << ",\n"
+           << "  \"cuda_memory_transfer_time_ms\": " << milliseconds(cudaMemoryTransferTime) << ",\n"
+           << "  \"synchronization_time_ms\": " << milliseconds(synchronizationTime) << ",\n"
+           << "  \"cuda_leaf_span_wall_ratio\": "
+           << (gpuTimings.cudaTimingSamples == 0 || totalWallTime.count() <= 0 ? std::string("null") :
+               std::to_string(std::chrono::duration<double>(gpuTimings.cudaKernelTime).count() /
+                   std::chrono::duration<double>(totalWallTime).count())) << ",\n"
            << "  \"expert_frequency\": {";
     bool first = true;
     for (const auto& [expert, frequency] : expertFrequency) {
@@ -184,6 +203,9 @@ RealModelProfile RealModelProfileCollector::collect(
     result.hostToDeviceBytes = runtime.transfers.hostToDeviceBytes;
     result.synchronizationCount = runtime.transfers.synchronizationCount +
         runtime.tensorBackend.synchronizationCount;
+    result.synchronizationTime = runtime.transfers.synchronizationTime + runtime.tensorBackend.synchronizationTime;
+    result.cudaMemoryTransferTime = runtime.transfers.transferTime + runtime.tensorBackend.transferTime;
+    result.gpuTimings = runtime.profiler;
     for (const auto& expert : runtime.residency) {
         if (expert.location != MemoryTier::Nvme) ++result.residentExpertCount;
         if (expert.location == MemoryTier::Vram) ++result.deviceResidentExpertCount;

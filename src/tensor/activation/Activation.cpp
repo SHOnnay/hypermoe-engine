@@ -68,11 +68,8 @@ void apply(ActivationType type,
             cuda && cuda->nativeKernelsAvailable()) {
             cuda->applyActivation(type == ActivationType::SiLU ? 0 : 1,
                                   input, output);
-            if (profiler) {
-                backend.synchronizeExecution();
-                profiler->recordActivationTime(
-                    std::chrono::steady_clock::now() - start);
-            }
+            // Native backend records deferred CUDA event time; profiling must
+            // not turn this asynchronous operation into a host barrier.
             return;
         }
         CpuTensorBackend cpu;

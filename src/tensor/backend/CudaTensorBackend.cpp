@@ -11,7 +11,6 @@
 #include "tensor/backend/CpuTensorBackend.hpp"
 
 #include <algorithm>
-#include <atomic>
 #include <chrono>
 #include <climits>
 #include <cmath>
@@ -33,6 +32,7 @@ struct CudaTensorBackend::Impl {
         : ordinal(selectedDevice), profiler(std::move(selectedProfiler)) {}
 
     ~Impl() {
+        events.reset(); // Complete retained storage before streams/pool/cuBLAS teardown.
 #ifdef HYPERMOE_HAS_CUBLAS
         if (handle != nullptr) (void)cublasDestroy(handle);
 #endif
@@ -44,9 +44,10 @@ struct CudaTensorBackend::Impl {
     std::shared_ptr<backend::CudaBackend> backend;
     std::shared_ptr<backend::CudaMemoryPool> pool;
     std::unique_ptr<backend::CudaStreamManager> streams;
+    std::unique_ptr<profiling::GpuEventQueue> events;
+    backend::cuda::Int8GemmMode int8Mode{backend::cuda::Int8GemmMode::Auto};
     std::string backendName{"CUDA tensor backend unavailable"};
     bool ready{};
-    std::atomic_uint64_t profilingEventWaits{};
 #ifdef HYPERMOE_HAS_CUBLAS
     cublasHandle_t handle{};
 #endif
@@ -134,15 +135,29 @@ void checkCublas(cublasStatus_t status, const char* operation) {
 } // namespace
 
 CudaTensorBackend::CudaTensorBackend(int device,
-                                     std::shared_ptr<Profiler> profiler)
+                                     std::shared_ptr<Profiler> profiler,
+                                     backend::cuda::Int8GemmMode int8Mode)
     : impl_(std::make_unique<Impl>(device, std::move(profiler))) {
     impl_->runtime = std::make_shared<backend::CudaRuntime>(device);
+    // Validate selection even in CPU-only builds.
+    (void)backend::cuda::planInt8Gemm(1, 1, 1, int8Mode);
+    impl_->int8Mode = int8Mode;
     if (!impl_->runtime->available()) return;
 #ifdef HYPERMOE_HAS_CUBLAS
     impl_->backend = std::make_shared<backend::CudaBackend>(device);
     impl_->pool = std::make_shared<backend::CudaMemoryPool>(impl_->backend);
     impl_->streams =
         std::make_unique<backend::CudaStreamManager>(impl_->runtime);
+    const auto runtime = impl_->runtime;
+    const auto memoryBackend = impl_->backend;
+    impl_->events = std::make_unique<profiling::GpuEventQueue>(profiling::GpuEventApi{
+        [runtime](bool timing) { return runtime->createEvent(timing); },
+        [runtime](backend::EventHandle event, backend::StreamHandle stream) { runtime->recordEvent(event, stream); },
+        [runtime](backend::EventHandle event) { return runtime->eventComplete(event); },
+        [runtime](backend::EventHandle start, backend::EventHandle end) { return runtime->elapsedMilliseconds(start, end); },
+        [runtime](backend::EventHandle event) { runtime->destroyEvent(event); },
+        [memoryBackend](backend::StreamHandle stream) { memoryBackend->synchronize(stream); }
+    }, impl_->profiler);
     checkCublas(cublasCreate(&impl_->handle), "cublasCreate");
     checkCublas(cublasSetStream(
                     impl_->handle,
@@ -184,9 +199,14 @@ bool CudaTensorBackend::nativeKernelsAvailable() const noexcept {
 
 backend::BackendStats CudaTensorBackend::backendStats() const {
     if (!available()) throw std::runtime_error("CUDA tensor backend is unavailable");
-    auto result = impl_->backend->stats();
-    result.synchronizationCount += impl_->profilingEventWaits.load(std::memory_order_relaxed);
-    return result;
+    impl_->events->collect();
+    return impl_->backend->stats();
+}
+
+profiling::GpuEventQueue::Scope CudaTensorBackend::timeRegion(profiling::GpuOperation operation) {
+    if (!available()) throw std::runtime_error("CUDA tensor backend is unavailable");
+    impl_->events->collect();
+    return impl_->events->begin(operation, impl_->streams->stream(backend::CudaStreamRole::Compute));
 }
 
 Tensor CudaTensorBackend::allocateTensor(const Shape& shape, DType dtype) {
@@ -210,12 +230,15 @@ void CudaTensorBackend::copyTensor(TensorView source, TensorView destination) {
 
     const auto stream =
         impl_->streams->stream(backend::CudaStreamRole::Transfer);
-    if (source.device().type == DeviceType::CUDA) {
-        impl_->backend->synchronize(
-            impl_->streams->stream(backend::CudaStreamRole::Compute));
-    }
+    backend::EventHandle sourceReady = nullptr;
     auto completion = impl_->backend->createEvent();
     try {
+        // Both source reads and destination writes depend on prior compute.
+        // Queue the dependency rather than blocking the host on that stream.
+        sourceReady = impl_->runtime->createEvent(false);
+        impl_->runtime->recordEvent(sourceReady,
+            impl_->streams->stream(backend::CudaStreamRole::Compute));
+        impl_->runtime->waitStreamEvent(stream, sourceReady);
         if (source.device().type == DeviceType::CPU) {
             impl_->backend->copyToDevice(destination.mutableData(), source.data(),
                                          source.bytes(), stream);
@@ -235,10 +258,14 @@ void CudaTensorBackend::copyTensor(TensorView source, TensorView destination) {
         }
         impl_->backend->recordEvent(completion, stream);
         impl_->backend->waitEvent(completion);
-        impl_->backend->synchronize(stream);
         impl_->backend->destroyEvent(completion);
+        impl_->runtime->destroyEvent(sourceReady);
+        impl_->events->collect();
     } catch (...) {
+        // Exception-only lifetime barrier: raw host buffers must not escape in flight.
+        try { impl_->backend->synchronize(stream); } catch (...) {}
         impl_->backend->destroyEvent(completion);
+        impl_->runtime->destroyEvent(sourceReady);
         throw;
     }
 }
@@ -246,6 +273,15 @@ void CudaTensorBackend::copyTensor(TensorView source, TensorView destination) {
 void CudaTensorBackend::matmul(TensorView left,
                                TensorView right,
                                TensorView output) {
+    matmulImpl(left, right, output, false);
+}
+
+void CudaTensorBackend::matmulExpert(TensorView left, TensorView right, TensorView output) {
+    matmulImpl(left, right, output, true);
+}
+
+void CudaTensorBackend::matmulImpl(TensorView left, TensorView right, TensorView output,
+                                  [[maybe_unused]] bool expert) {
     if (!available()) throw std::runtime_error("CUDA tensor backend is unavailable");
     [[maybe_unused]] const auto leftOwner = pin(left, "CUDA matmul");
     [[maybe_unused]] const auto rightOwner = pin(right, "CUDA matmul");
@@ -284,42 +320,16 @@ void CudaTensorBackend::matmul(TensorView left,
     const float beta = 0.0F;
     const auto stream =
         impl_->streams->stream(backend::CudaStreamRole::Compute);
-    if (impl_->profiler) {
-        auto eventStart = impl_->runtime->createEvent(true);
-        backend::EventHandle eventEnd = nullptr;
-        try {
-            eventEnd = impl_->runtime->createEvent(true);
-            impl_->runtime->recordEvent(eventStart, stream);
-            checkCublas(cublasSgemm(
-                            impl_->handle, CUBLAS_OP_N, CUBLAS_OP_N, columns, rows,
-                            inner, &alpha, static_cast<const float*>(right.data()),
-                            columns, static_cast<const float*>(left.data()), inner,
-                            &beta, static_cast<float*>(output.mutableData()), columns),
-                        "cublasSgemm");
-            impl_->runtime->recordEvent(eventEnd, stream);
-            impl_->runtime->synchronizeEvent(eventEnd);
-            impl_->profilingEventWaits.fetch_add(1, std::memory_order_relaxed);
-            const auto milliseconds = static_cast<double>(
-                impl_->runtime->elapsedMilliseconds(eventStart, eventEnd));
-            const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::duration<double, std::milli>(milliseconds));
-            impl_->profiler->recordKernelTime(elapsed);
-            impl_->profiler->recordMatmulTime(elapsed);
-            impl_->runtime->destroyEvent(eventStart);
-            impl_->runtime->destroyEvent(eventEnd);
-        } catch (...) {
-            impl_->runtime->destroyEvent(eventStart);
-            impl_->runtime->destroyEvent(eventEnd);
-            throw;
-        }
-    } else {
-        checkCublas(cublasSgemm(
+    impl_->events->collect();
+    auto operation = impl_->events->begin(expert ? profiling::GpuOperation::ExpertFp32Gemm :
+        profiling::GpuOperation::Fp32Gemm, stream, {leftOwner, rightOwner, outputOwner});
+    checkCublas(cublasSgemm(
                         impl_->handle, CUBLAS_OP_N, CUBLAS_OP_N, columns, rows,
                         inner, &alpha, static_cast<const float*>(right.data()),
                         columns, static_cast<const float*>(left.data()), inner,
                         &beta, static_cast<float*>(output.mutableData()), columns),
                     "cublasSgemm");
-    }
+    operation.finish();
 #else
     (void)left;
     (void)right;
@@ -333,6 +343,17 @@ void CudaTensorBackend::matmulInt8Weights(
     TensorView right,
     const quantization::QuantizationParameters& parameters,
     TensorView output) {
+    matmulInt8Impl(left, right, parameters, output, false);
+}
+
+void CudaTensorBackend::matmulInt8Expert(TensorView left, TensorView right,
+    const quantization::QuantizationParameters& parameters, TensorView output) {
+    matmulInt8Impl(left, right, parameters, output, true);
+}
+
+void CudaTensorBackend::matmulInt8Impl(TensorView left, TensorView right,
+    const quantization::QuantizationParameters& parameters, TensorView output,
+    [[maybe_unused]] bool expert) {
     if (!available()) throw std::runtime_error("CUDA tensor backend is unavailable");
     [[maybe_unused]] const auto leftOwner = pin(left, "CUDA INT8 weight matmul");
     [[maybe_unused]] const auto rightOwner = pin(right, "CUDA INT8 weight matmul");
@@ -362,27 +383,27 @@ void CudaTensorBackend::matmulInt8Weights(
             "CUDA INT8 weight matmul output cannot alias an input");
     }
 #ifdef HYPERMOE_HAS_CUDA_KERNELS
-    const auto outputElements = checkedProduct(
-        leftDims[0], rightDims[1], "CUDA INT8 weight matmul");
-    if (outputElements >
-        static_cast<std::size_t>(std::numeric_limits<unsigned>::max()) *
-            static_cast<std::size_t>(256U)) {
-        throw std::overflow_error("CUDA INT8 weight matmul launch is too large");
-    }
-    const auto start = std::chrono::steady_clock::now();
-    backend::cuda::kernels::int8WeightMatmul(
+    impl_->events->collect();
+    const auto plan = backend::cuda::planInt8Gemm(leftDims[0], leftDims[1], rightDims[1], impl_->int8Mode);
+    std::shared_ptr<backend::DeviceBuffer> scratch;
+    if (plan.scratchElements != 0) scratch = impl_->pool->allocateDeviceBuffer(plan.scratchElements * sizeof(float));
+    const auto stream = impl_->streams->stream(backend::CudaStreamRole::Compute);
+    auto operation = impl_->events->begin(expert ? profiling::GpuOperation::ExpertInt8Gemm :
+        profiling::GpuOperation::Int8Gemm, stream, {leftOwner, rightOwner, outputOwner, scratch});
+    if (plan.implementation == backend::cuda::Int8GemmMode::Cooperative) {
+        backend::cuda::kernels::int8WeightMatmulCooperative(
+            static_cast<const float*>(left.data()), static_cast<const std::int8_t*>(right.data()),
+            static_cast<float*>(output.mutableData()), scratch ? static_cast<float*>(scratch->data()) : nullptr,
+            leftDims[0], leftDims[1], rightDims[1], plan.partitions, parameters.scale, parameters.zeroPoint, stream);
+    } else {
+        backend::cuda::kernels::int8WeightMatmul(
         static_cast<const float*>(left.data()),
         static_cast<const std::int8_t*>(right.data()),
         static_cast<float*>(output.mutableData()), leftDims[0], leftDims[1],
         rightDims[1], parameters.scale, parameters.zeroPoint,
-        impl_->streams->stream(backend::CudaStreamRole::Compute));
-    if (impl_->profiler) {
-        impl_->backend->synchronize(
-            impl_->streams->stream(backend::CudaStreamRole::Compute));
-        const auto elapsed = std::chrono::steady_clock::now() - start;
-        impl_->profiler->recordKernelTime(elapsed);
-        impl_->profiler->recordMatmulTime(elapsed);
+        stream);
     }
+    operation.finish();
 #else
     (void)parameters;
     throw std::runtime_error(
@@ -408,7 +429,8 @@ void CudaTensorBackend::add(TensorView left,
 #ifdef HYPERMOE_HAS_CUBLAS
     const auto count = static_cast<int>(elements);
     const float one = 1.0F;
-    const auto start = std::chrono::steady_clock::now();
+    auto operation = impl_->events->begin(profiling::GpuOperation::Elementwise,
+        impl_->streams->stream(backend::CudaStreamRole::Compute), {leftOwner, rightOwner, outputOwner});
     checkCublas(cublasScopy(impl_->handle, count,
                             static_cast<const float*>(left.data()), 1,
                             static_cast<float*>(output.mutableData()), 1),
@@ -417,11 +439,7 @@ void CudaTensorBackend::add(TensorView left,
                             static_cast<const float*>(right.data()), 1,
                             static_cast<float*>(output.mutableData()), 1),
                 "cublasSaxpy(add)");
-    if (impl_->profiler) {
-        impl_->backend->synchronize(
-            impl_->streams->stream(backend::CudaStreamRole::Compute));
-        impl_->profiler->recordKernelTime(std::chrono::steady_clock::now() - start);
-    }
+    operation.finish();
 #else
     (void)elements;
     throw std::runtime_error("cuBLAS support is unavailable");
@@ -445,18 +463,15 @@ void CudaTensorBackend::mul(TensorView left,
     }
 #ifdef HYPERMOE_HAS_CUBLAS
     const auto count = static_cast<int>(elements);
-    const auto start = std::chrono::steady_clock::now();
+    auto operation = impl_->events->begin(profiling::GpuOperation::Elementwise,
+        impl_->streams->stream(backend::CudaStreamRole::Compute), {leftOwner, rightOwner, outputOwner});
     checkCublas(cublasSdgmm(
                     impl_->handle, CUBLAS_SIDE_RIGHT, 1, count,
                     static_cast<const float*>(left.data()), 1,
                     static_cast<const float*>(right.data()), 1,
                     static_cast<float*>(output.mutableData()), 1),
                 "cublasSdgmm(multiply)");
-    if (impl_->profiler) {
-        impl_->backend->synchronize(
-            impl_->streams->stream(backend::CudaStreamRole::Compute));
-        impl_->profiler->recordKernelTime(std::chrono::steady_clock::now() - start);
-    }
+    operation.finish();
 #else
     (void)elements;
     throw std::runtime_error("cuBLAS support is unavailable");
@@ -488,6 +503,8 @@ void CudaTensorBackend::rmsNorm(TensorView input,
         throw std::overflow_error("CUDA RMSNorm width exceeds cuBLAS integer limits");
     }
 #ifdef HYPERMOE_HAS_CUBLAS
+    auto operation = impl_->events->begin(profiling::GpuOperation::RMSNorm,
+        impl_->streams->stream(backend::CudaStreamRole::Compute), {inputOwner, weightOwner, outputOwner});
     if (nativeKernelsAvailable()) {
 #ifdef HYPERMOE_HAS_CUDA_KERNELS
         backend::cuda::kernels::rmsNorm(
@@ -495,6 +512,7 @@ void CudaTensorBackend::rmsNorm(TensorView input,
             static_cast<const float*>(weight.data()),
             static_cast<float*>(output.mutableData()), rows, width, epsilon,
             impl_->streams->stream(backend::CudaStreamRole::Compute));
+        operation.finish();
         return;
 #endif
     }
@@ -502,7 +520,6 @@ void CudaTensorBackend::rmsNorm(TensorView input,
     const auto* source = static_cast<const float*>(input.data());
     const auto* scale = static_cast<const float*>(weight.data());
     auto* destination = static_cast<float*>(output.mutableData());
-    const auto start = std::chrono::steady_clock::now();
     for (std::size_t row = 0; row < rows; ++row) {
         float norm{};
         checkCublas(cublasSnrm2(impl_->handle, count, source + row * width, 1, &norm),
@@ -518,11 +535,7 @@ void CudaTensorBackend::rmsNorm(TensorView input,
                                 destination + row * width, 1),
                     "cublasSscal(RMSNorm)");
     }
-    impl_->backend->synchronize(
-        impl_->streams->stream(backend::CudaStreamRole::Compute));
-    if (impl_->profiler) {
-        impl_->profiler->recordKernelTime(std::chrono::steady_clock::now() - start);
-    }
+    operation.finish();
 #else
     (void)rows;
     (void)width;
@@ -538,10 +551,14 @@ void CudaTensorBackend::applyActivation(int type,
         throw std::invalid_argument("CUDA activation type is invalid");
     }
 #ifdef HYPERMOE_HAS_CUDA_KERNELS
+    auto operation = impl_->events->begin(profiling::GpuOperation::Activation,
+        impl_->streams->stream(backend::CudaStreamRole::Compute),
+        {pin(input, "CUDA activation"), pin(output, "CUDA activation")});
     backend::cuda::kernels::activation(
         type, static_cast<const float*>(input.data()),
         static_cast<float*>(output.mutableData()), input.shape().elementCount(),
         impl_->streams->stream(backend::CudaStreamRole::Compute));
+    operation.finish();
 #else
     (void)type;
     throw std::runtime_error("native CUDA activation kernels are unavailable");
@@ -568,10 +585,13 @@ void CudaTensorBackend::applyRoPE(TensorView values,
         throw std::invalid_argument("CUDA RoPE tensor metadata is invalid");
     }
 #ifdef HYPERMOE_HAS_CUDA_KERNELS
+    auto operation = impl_->events->begin(profiling::GpuOperation::RoPE,
+        impl_->streams->stream(backend::CudaStreamRole::Compute), {owner});
     backend::cuda::kernels::rope(
         static_cast<float*>(values.mutableData()), tokenCount, headCount,
         headDimension, positionOffset, theta,
         impl_->streams->stream(backend::CudaStreamRole::Compute));
+    operation.finish();
 #else
     (void)positionOffset;
     throw std::runtime_error("native CUDA RoPE kernels are unavailable");
@@ -602,11 +622,14 @@ CudaTensorBackend::RoutingSelection CudaTensorBackend::routeTopK(
     auto scoresBuffer = impl_->pool->allocateDeviceBuffer(selectedCount * sizeof(float));
 #ifdef HYPERMOE_HAS_CUDA_KERNELS
     const auto stream = impl_->streams->stream(backend::CudaStreamRole::Compute);
+    auto operation = impl_->events->begin(profiling::GpuOperation::Router,
+        stream, {pin(logits.view(), "CUDA router"), idsBuffer, scoresBuffer});
     backend::cuda::kernels::routerTopK(
         static_cast<float*>(logits.data()), tokens, expertCount, topK,
         softmax, renormalize,
         static_cast<std::uint32_t*>(idsBuffer->data()),
         static_cast<float*>(scoresBuffer->data()), stream);
+    operation.finish();
     RoutingSelection result;
     result.expertIds.resize(selectedCount);
     result.scores.resize(selectedCount);
@@ -615,6 +638,7 @@ CudaTensorBackend::RoutingSelection CudaTensorBackend::routeTopK(
     impl_->backend->copyFromDevice(result.scores.data(), scoresBuffer->data(),
                                    scoresBuffer->size(), stream);
     impl_->backend->synchronize(stream);
+    impl_->events->collect();
     if (std::any_of(result.scores.begin(), result.scores.end(),
                     [](float value) { return !std::isfinite(value); })) {
         throw std::runtime_error("CUDA router produced non-finite scores");
@@ -662,6 +686,10 @@ void CudaTensorBackend::causalAttention(
         throw std::invalid_argument("CUDA attention tensor metadata is incompatible");
     }
 #ifdef HYPERMOE_HAS_CUDA_KERNELS
+    auto operation = impl_->events->begin(profiling::GpuOperation::AttentionCore,
+        impl_->streams->stream(backend::CudaStreamRole::Compute),
+        {pin(query, "CUDA attention"), pin(key, "CUDA attention"), pin(value, "CUDA attention"),
+         pin(scores, "CUDA attention"), pin(probabilities, "CUDA attention"), pin(context, "CUDA attention")});
     backend::cuda::kernels::causalAttention(
         static_cast<const float*>(query.data()), static_cast<const float*>(key.data()),
         static_cast<const float*>(value.data()), static_cast<float*>(scores.mutableData()),
@@ -670,6 +698,7 @@ void CudaTensorBackend::causalAttention(
         key.shape().dimensions()[0], queryHeads, keyValueHeads, headDimension,
         queryPositionOffset, keyPositionOffset, causal,
         impl_->streams->stream(backend::CudaStreamRole::Compute));
+    operation.finish();
 #else
     (void)queryPositionOffset;
     (void)keyPositionOffset;
@@ -702,11 +731,15 @@ void CudaTensorBackend::gatherRows(TensorView input,
     const auto stream = impl_->streams->stream(backend::CudaStreamRole::Compute);
     impl_->backend->copyToDevice(indexBuffer->data(), indices.data(), indexBuffer->size(), stream);
 #ifdef HYPERMOE_HAS_CUDA_KERNELS
+    auto operation = impl_->events->begin(profiling::GpuOperation::Gather, stream,
+        {pin(input, "CUDA gather"), pin(output, "CUDA gather"), indexBuffer});
     backend::cuda::kernels::gatherRows(
         static_cast<const float*>(input.data()), static_cast<float*>(output.mutableData()),
         static_cast<const std::uint32_t*>(indexBuffer->data()), rows.size(),
         input.shape().dimensions()[1], stream);
+    operation.finish();
     impl_->backend->synchronize(stream);
+    impl_->events->collect();
 #endif
 }
 
@@ -737,12 +770,16 @@ void CudaTensorBackend::scatterAddRows(
     impl_->backend->copyToDevice(indexBuffer->data(), indices.data(), indexBuffer->size(), stream);
     impl_->backend->copyToDevice(weightBuffer->data(), weights.data(), weights.size_bytes(), stream);
 #ifdef HYPERMOE_HAS_CUDA_KERNELS
+    auto operation = impl_->events->begin(profiling::GpuOperation::Scatter, stream,
+        {pin(input, "CUDA scatter"), pin(output, "CUDA scatter"), indexBuffer, weightBuffer});
     backend::cuda::kernels::scatterAddRows(
         static_cast<const float*>(input.data()), static_cast<float*>(output.mutableData()),
         static_cast<const std::uint32_t*>(indexBuffer->data()),
         static_cast<const float*>(weightBuffer->data()), rows.size(),
         input.shape().dimensions()[1], stream);
+    operation.finish();
     impl_->backend->synchronize(stream);
+    impl_->events->collect();
 #endif
 }
 
@@ -752,9 +789,12 @@ void CudaTensorBackend::zero(TensorView output) {
         throw std::invalid_argument("CUDA zero tensor metadata is incompatible");
     }
 #ifdef HYPERMOE_HAS_CUDA_KERNELS
+    auto operation = impl_->events->begin(profiling::GpuOperation::Zero,
+        impl_->streams->stream(backend::CudaStreamRole::Compute), {pin(output, "CUDA zero")});
     backend::cuda::kernels::zero(
         static_cast<float*>(output.mutableData()), output.shape().elementCount(),
         impl_->streams->stream(backend::CudaStreamRole::Compute));
+    operation.finish();
 #endif
 }
 
@@ -773,6 +813,7 @@ void CudaTensorBackend::synchronize() {
         impl_->streams->stream(backend::CudaStreamRole::Transfer));
     impl_->backend->synchronize(
         impl_->streams->stream(backend::CudaStreamRole::Prefetch));
+    impl_->events->collect();
     if (impl_->profiler) impl_->profiler->recordSynchronization();
 }
 
@@ -780,6 +821,7 @@ void CudaTensorBackend::synchronizeExecution() {
     if (!available()) throw std::runtime_error("CUDA tensor backend is unavailable");
     impl_->backend->synchronize(
         impl_->streams->stream(backend::CudaStreamRole::Compute));
+    impl_->events->collect();
     if (impl_->profiler) impl_->profiler->recordSynchronization();
 }
 

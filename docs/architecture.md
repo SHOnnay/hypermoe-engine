@@ -549,6 +549,15 @@ promotions. No scheduler/transfer/attention/INT8 architecture is replaced. See
 
 ## Deferred intentionally
 
+Phase 23 keeps the memory hierarchy intact and adds a cooperative compute
+dispatch for affine INT8 expert weights. A bounded split-K scratch buffer comes
+from the existing device pool; compute-stream reduction fixes ordering. Deferred
+CUDA end events retain tensor owners until completion and collect timing without
+profiler-only waits. Tensor copies use compute-to-transfer event dependencies
+and retain their required host completion boundary. See
+[GPU compute](components/gpu-compute.md) for the audit, timing definitions and
+native qualification procedure.
+
 - GGUF readers and DeepSeek/GLM/Kimi/Mixtral artifact importers
 - CUDA embedding lookup, LM head specialization, and paged KV cache layout
 - Direct-storage integrations and unbuffered platform-specific NVMe benchmarks
@@ -556,6 +565,6 @@ promotions. No scheduler/transfer/attention/INT8 architecture is replaced. See
   residuals, dense/non-MoE layers, output bias, batched sessions,
   beam/speculative decoding, streaming, and serving
 - Automatic scheduler-driven capacity selection and eviction policy execution
-- Optimized/tensor-core quantized GEMM, batched/strided GEMM, FP16 compute,
+- Tensor-core quantized GEMM, batched/strided GEMM, FP16 compute,
   kernel launch policy, and CUDA graphs
 - Fused or precision-specialized CUDA kernels

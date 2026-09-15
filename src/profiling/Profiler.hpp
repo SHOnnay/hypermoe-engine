@@ -1,5 +1,7 @@
 #pragma once
 
+#include "profiling/GpuOperation.hpp"
+
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -52,6 +54,16 @@ struct ProfilerSnapshot {
     double gpuUtilizationPercent{};
     double peakGpuUtilizationPercent{};
     double modeledLatencyMs{};
+    std::chrono::nanoseconds cudaKernelTime{};
+    std::chrono::nanoseconds cudaFp32GemmTime{};
+    std::chrono::nanoseconds cudaInt8GemmTime{};
+    std::chrono::nanoseconds cudaExpertGemmTime{};
+    std::chrono::nanoseconds cudaActivationTime{};
+    std::chrono::nanoseconds cudaAttentionCoreTime{};
+    std::chrono::nanoseconds cudaAttentionTime{};
+    std::chrono::nanoseconds cudaExpertExecutionTime{};
+    std::uint64_t cudaTimingSamples{};
+    std::uint64_t gpuUtilizationSamples{};
 
     [[nodiscard]] double cacheHitRate() const noexcept;
     [[nodiscard]] double averageQueueWaitMs() const noexcept;
@@ -95,6 +107,7 @@ public:
     void recordQuantizationTime(std::chrono::nanoseconds duration);
     void recordTensorAllocation(std::uint64_t count = 1);
     void observeGpuUtilization(double percentage);
+    void recordGpuTime(profiling::GpuOperation operation, std::chrono::nanoseconds duration);
 
     [[nodiscard]] ProfilerSnapshot snapshot() const;
     [[nodiscard]] std::string toJson() const;

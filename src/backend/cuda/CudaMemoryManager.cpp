@@ -226,6 +226,7 @@ void CudaBackend::copyFromDevice(void* destination,
 }
 
 void CudaBackend::synchronize(StreamHandle stream) {
+    [[maybe_unused]] const auto waitingStarted = std::chrono::steady_clock::now();
 #ifdef HYPERMOE_HAS_CUDA
     checkCuda(cudaSetDevice(impl_->device), "cudaSetDevice");
     if (stream == nullptr) {
@@ -238,6 +239,7 @@ void CudaBackend::synchronize(StreamHandle stream) {
     {
         std::scoped_lock lock(impl_->mutex);
         ++impl_->statistics.synchronizationCount;
+        impl_->statistics.synchronizationTime += std::chrono::steady_clock::now() - waitingStarted;
     }
 #else
     (void)stream;
@@ -280,11 +282,13 @@ void CudaBackend::recordEvent(EventHandle event, StreamHandle stream) {
 }
 
 void CudaBackend::waitEvent(EventHandle event) {
+    [[maybe_unused]] const auto waitingStarted = std::chrono::steady_clock::now();
     impl_->runtime->synchronizeEvent(event);
 #ifdef HYPERMOE_HAS_CUDA
     collectTimings(*impl_, nullptr, true);
     std::scoped_lock lock(impl_->mutex);
     ++impl_->statistics.synchronizationCount;
+    impl_->statistics.synchronizationTime += std::chrono::steady_clock::now() - waitingStarted;
 #endif
 }
 

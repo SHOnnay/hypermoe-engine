@@ -2,6 +2,7 @@
 
 #include "profiling/Profiler.hpp"
 #include "tensor/backend/TensorBackend.hpp"
+#include "tensor/backend/CudaTensorBackend.hpp"
 
 #include <chrono>
 #include <stdexcept>
@@ -20,7 +21,11 @@ MatmulExpertExecutor::MatmulExpertExecutor(
 void MatmulExpertExecutor::execute(tensor::TensorView input,
                                    tensor::TensorView expertWeights,
                                    tensor::TensorView output) {
-    backend_->matmul(input, expertWeights, output);
+    if (auto* cuda = dynamic_cast<tensor::CudaTensorBackend*>(backend_.get())) {
+        cuda->matmulExpert(input, expertWeights, output);
+    } else {
+        backend_->matmul(input, expertWeights, output);
+    }
 }
 
 ExpertMlpExecutor::ExpertMlpExecutor(
@@ -86,6 +91,9 @@ void ExpertMlpExecutor::execute(tensor::TensorView input,
     }
 
     const auto expertStart = std::chrono::steady_clock::now();
+    auto* cuda = dynamic_cast<tensor::CudaTensorBackend*>(backend_.get());
+    std::optional<profiling::GpuEventQueue::Scope> gpuRegion;
+    if (cuda) gpuRegion.emplace(cuda->timeRegion(profiling::GpuOperation::ExpertRegion));
     const tensor::Shape intermediateShape{inputShape[0], gateShape[1]};
     auto gate = backend_->allocateTensor(intermediateShape, tensor::DType::FP32);
     auto up = backend_->allocateTensor(intermediateShape, tensor::DType::FP32);
@@ -100,10 +108,11 @@ void ExpertMlpExecutor::execute(tensor::TensorView input,
                                  quantization,
                              tensor::TensorView destination) {
         if (weight.dtype() == tensor::DType::INT8) {
-            backend_->matmulInt8Weights(source, weight, *quantization,
-                                        destination);
+            if (cuda) cuda->matmulInt8Expert(source, weight, *quantization, destination);
+            else backend_->matmulInt8Weights(source, weight, *quantization, destination);
         } else {
-            backend_->matmul(source, weight, destination);
+            if (cuda) cuda->matmulExpert(source, weight, destination);
+            else backend_->matmul(source, weight, destination);
         }
     };
     auto projectionStart = std::chrono::steady_clock::now();
@@ -120,7 +129,8 @@ void ExpertMlpExecutor::execute(tensor::TensorView input,
     projectionStart = std::chrono::steady_clock::now();
     project(gated, weights.downProjection, weights.downQuantization, output);
     projectionTime += std::chrono::steady_clock::now() - projectionStart;
-    if (profiler_) {
+    if (gpuRegion) gpuRegion->finish();
+    if (profiler_ && !cuda) {
         profiler_->recordProjectionTime(projectionTime);
         profiler_->recordExpertExecutionTime(
             std::chrono::steady_clock::now() - expertStart);

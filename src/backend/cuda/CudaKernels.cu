@@ -1,4 +1,5 @@
 #include "backend/cuda/CudaKernels.hpp"
+#include "backend/cuda/Int8GemmPlan.hpp"
 
 #include <cuda_runtime.h>
 #include <math_constants.h>
@@ -44,6 +45,65 @@ __global__ void int8WeightMatmulKernel(
         sum += left[row * inner + index] * weight;
     }
     output[outputIndex] = sum;
+}
+
+// One warp reads 32 neighboring INT8 columns, eight warps split K. A shared
+// FP32 input tile is reused by all columns. Split-K increases parallelism for
+// single-token projections without expanding weights or using atomic sums.
+__global__ void cooperativeInt8Kernel(
+    const float* left, const std::int8_t* right, float* destination,
+    std::size_t inner, std::size_t columns, std::size_t partitions,
+    float scale, std::int32_t zeroPoint) {
+    __shared__ float inputTile[256];
+    __shared__ float sums[8][32];
+    const auto columnTiles = columns / 32U + static_cast<std::size_t>(columns % 32U != 0);
+    const auto columnTile = static_cast<std::size_t>(blockIdx.x) % columnTiles;
+    const auto rowPartition = static_cast<std::size_t>(blockIdx.x) / columnTiles;
+    const auto row = rowPartition / partitions;
+    const auto partition = rowPartition % partitions;
+    const auto column = columnTile * 32U + threadIdx.x;
+    const auto laneK = static_cast<std::size_t>(threadIdx.y);
+    const auto thread = laneK * 32U + threadIdx.x;
+    const auto baseSize = inner / partitions;
+    const auto remainder = inner % partitions;
+    const auto begin = partition * baseSize + (partition < remainder ? partition : remainder);
+    const auto end = begin + baseSize + static_cast<std::size_t>(partition < remainder);
+    float sum = 0.0F;
+    for (auto tile = begin; tile < end; tile += 256U) {
+        inputTile[thread] = thread < end - tile ? left[row * inner + tile + thread] : 0.0F;
+        __syncthreads();
+        if (column < columns) {
+            for (auto k = laneK; k < 256U && k < end - tile; k += 8U) {
+                const auto quantized = static_cast<std::int32_t>(right[(tile + k) * columns + column]);
+                const auto weight = static_cast<float>(quantized - zeroPoint) * scale;
+                sum += inputTile[k] * weight;
+            }
+        }
+        __syncthreads();
+    }
+    sums[laneK][threadIdx.x] = sum;
+    __syncthreads();
+    for (unsigned stride = 4U; stride != 0; stride /= 2U) {
+        if (laneK < stride) sums[laneK][threadIdx.x] += sums[laneK + stride][threadIdx.x];
+        __syncthreads();
+    }
+    if (laneK == 0 && column < columns) {
+        destination[(row * partitions + partition) * columns + column] = sums[0][threadIdx.x];
+    }
+}
+
+__global__ void reduceInt8PartitionsKernel(const float* partials, float* output,
+                                          std::size_t elements,
+                                          std::size_t columns, std::size_t partitions) {
+    const auto index = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (index >= elements) return;
+    const auto row = index / columns;
+    const auto column = index % columns;
+    float sum = 0.0F;
+    for (std::size_t partition = 0; partition < partitions; ++partition) {
+        sum += partials[(row * partitions + partition) * columns + column];
+    }
+    output[index] = sum;
 }
 
 __global__ void rmsNormKernel(const float* input, const float* weight,
@@ -260,6 +320,28 @@ void int8WeightMatmul(const float* left, const std::int8_t* right,
                              static_cast<cudaStream_t>(stream)>>>(
         left, right, output, rows, inner, columns, scale, zeroPoint);
     checkLaunch("CUDA INT8 weight matmul kernel");
+}
+
+void int8WeightMatmulCooperative(
+    const float* left, const std::int8_t* right, float* output, float* partials,
+    std::size_t rows, std::size_t inner, std::size_t columns,
+    std::size_t partitions, float scale, std::int32_t zeroPoint,
+    StreamHandle stream) {
+    const auto plan = planInt8Gemm(rows, inner, columns, Int8GemmMode::Cooperative);
+    if (partitions != plan.partitions || (partitions > 1 && partials == nullptr)) {
+        throw std::invalid_argument("cooperative INT8 GEMM scratch/partition mismatch");
+    }
+    cooperativeInt8Kernel<<<static_cast<unsigned>(plan.blocks), dim3(32U, 8U), 0,
+                             static_cast<cudaStream_t>(stream)>>>(
+        left, right, partitions == 1 ? output : partials, inner, columns,
+        partitions, scale, zeroPoint);
+    checkLaunch("CUDA cooperative INT8 weight matmul kernel");
+    if (partitions > 1) {
+        reduceInt8PartitionsKernel<<<blocks(rows * columns), threadsPerBlock, 0,
+                                     static_cast<cudaStream_t>(stream)>>>(
+            partials, output, rows * columns, columns, partitions);
+        checkLaunch("CUDA deterministic INT8 partition reduction kernel");
+    }
 }
 
 void rmsNorm(const float* input, const float* weight, float* output,

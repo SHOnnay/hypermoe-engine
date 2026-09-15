@@ -62,7 +62,8 @@ int main(int argc, char** argv) {
                          "[--expert-ram-budget 2GiB] [--overlap on|off] "
                          "[--auto-expert-device-budget on|off] "
                          "[--kv-reservation 256MiB] [--workspace-reservation 512MiB] "
-                         "[--staging-reservation 512MiB] [--safety-reservation 512MiB]\n";
+                         "[--staging-reservation 512MiB] [--safety-reservation 512MiB] "
+                         "[--int8-gemm auto|reference|cooperative]\n";
             return 2;
         }
         const std::filesystem::path artifact = argv[1];
@@ -81,10 +82,16 @@ int main(int argc, char** argv) {
             if (option == "--expert-device-budget" || option == "--expert-ram-budget" ||
                 option == "--overlap" || option == "--auto-expert-device-budget" ||
                 option == "--kv-reservation" || option == "--workspace-reservation" ||
-                option == "--staging-reservation" || option == "--safety-reservation") {
+                option == "--staging-reservation" || option == "--safety-reservation" || option == "--int8-gemm") {
                 if (++index >= argc) throw std::invalid_argument("benchmark option requires a value");
                 const std::string_view value{argv[index]};
-                if (option == "--overlap" || option == "--auto-expert-device-budget") {
+                if (option == "--int8-gemm") {
+                    using hypermoe::backend::cuda::Int8GemmMode;
+                    if (value == "auto") configuration.int8GemmMode = Int8GemmMode::Auto;
+                    else if (value == "reference") configuration.int8GemmMode = Int8GemmMode::Reference;
+                    else if (value == "cooperative") configuration.int8GemmMode = Int8GemmMode::Cooperative;
+                    else throw std::invalid_argument("INT8 GEMM mode must be auto, reference or cooperative");
+                } else if (option == "--overlap" || option == "--auto-expert-device-budget") {
                     if (value != "on" && value != "off") throw std::invalid_argument("boolean benchmark option must be on or off");
                     if (option == "--overlap") configuration.transferComputeOverlap = value == "on";
                     else configuration.automaticExpertDeviceBudget = value == "on";
@@ -123,6 +130,7 @@ int main(int argc, char** argv) {
             forwards, runtime.snapshot(), cache->memoryUsageBytes(), wallTime);
         profile.modelLoadingTime = loadingTime;
         profile.transferComputeOverlap = configuration.transferComputeOverlap;
+        profile.int8GemmMode = hypermoe::backend::cuda::toString(configuration.int8GemmMode);
         std::ofstream output(reportPath, std::ios::binary | std::ios::trunc);
         const auto json = profile.toJson();
         output.write(json.data(), static_cast<std::streamsize>(json.size()));

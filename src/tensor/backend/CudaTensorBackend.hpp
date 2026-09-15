@@ -1,6 +1,8 @@
 #pragma once
 
 #include "tensor/backend/TensorBackend.hpp"
+#include "backend/cuda/Int8GemmPlan.hpp"
+#include "profiling/GpuEventQueue.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -22,7 +24,8 @@ public:
     };
 
     explicit CudaTensorBackend(int device = 0,
-                               std::shared_ptr<Profiler> profiler = {});
+                               std::shared_ptr<Profiler> profiler = {},
+                               backend::cuda::Int8GemmMode int8Mode = backend::cuda::Int8GemmMode::Auto);
     ~CudaTensorBackend() override;
 
     CudaTensorBackend(const CudaTensorBackend&) = delete;
@@ -53,6 +56,11 @@ public:
                  float epsilon);
     [[nodiscard]] bool nativeKernelsAvailable() const noexcept;
     [[nodiscard]] backend::BackendStats backendStats() const;
+    [[nodiscard]] profiling::GpuEventQueue::Scope timeRegion(profiling::GpuOperation operation);
+    void matmulExpert(TensorView left, TensorView right, TensorView output);
+    void matmulInt8Expert(TensorView left, TensorView right,
+                         const quantization::QuantizationParameters& parameters,
+                         TensorView output);
     void applyActivation(int type, TensorView input, TensorView output);
     void applyRoPE(TensorView values, std::size_t tokenCount,
                    std::size_t headCount, std::size_t headDimension,
@@ -79,6 +87,10 @@ public:
     void synchronizeExecution() override;
 
 private:
+    void matmulImpl(TensorView left, TensorView right, TensorView output, bool expert);
+    void matmulInt8Impl(TensorView left, TensorView right,
+                       const quantization::QuantizationParameters& parameters,
+                       TensorView output, bool expert);
     std::unique_ptr<Impl> impl_;
 };
 

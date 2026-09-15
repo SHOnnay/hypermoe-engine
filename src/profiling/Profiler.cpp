@@ -210,8 +210,55 @@ void Profiler::observeGpuUtilization(double percentage) {
     const auto bounded = std::clamp(percentage, 0.0, 100.0);
     std::scoped_lock lock(mutex_);
     metrics_.gpuUtilizationPercent = bounded;
+    ++metrics_.gpuUtilizationSamples;
     metrics_.peakGpuUtilizationPercent =
         std::max(metrics_.peakGpuUtilizationPercent, bounded);
+}
+
+void Profiler::recordGpuTime(profiling::GpuOperation operation,
+                             std::chrono::nanoseconds duration) {
+    if (duration.count() < 0) throw std::invalid_argument("negative GPU duration");
+    std::scoped_lock lock(mutex_);
+    using profiling::GpuOperation;
+    ++metrics_.cudaTimingSamples;
+    // Inclusive regions are separate: adding them to leaf spans would double count.
+    if (operation == GpuOperation::AttentionRegion) {
+        metrics_.cudaAttentionTime += duration;
+        return;
+    }
+    if (operation == GpuOperation::ExpertRegion) {
+        metrics_.cudaExpertExecutionTime += duration;
+        metrics_.expertExecutionTime += duration;
+        return;
+    }
+    metrics_.cudaKernelTime += duration;
+    metrics_.kernelTime += duration;
+    switch (operation) {
+    case GpuOperation::ExpertFp32Gemm:
+    case GpuOperation::ExpertInt8Gemm:
+        metrics_.cudaExpertGemmTime += duration;
+        metrics_.projectionTime += duration;
+        break;
+    default: break;
+    }
+    switch (operation) {
+    case GpuOperation::Fp32Gemm:
+    case GpuOperation::ExpertFp32Gemm:
+        metrics_.cudaFp32GemmTime += duration;
+        metrics_.matmulTime += duration;
+        break;
+    case GpuOperation::Int8Gemm:
+    case GpuOperation::ExpertInt8Gemm:
+        metrics_.cudaInt8GemmTime += duration;
+        metrics_.matmulTime += duration;
+        break;
+    case GpuOperation::Activation:
+        metrics_.cudaActivationTime += duration;
+        metrics_.activationTime += duration;
+        break;
+    case GpuOperation::AttentionCore: metrics_.cudaAttentionCoreTime += duration; break;
+    default: break;
+    }
 }
 
 ProfilerSnapshot Profiler::snapshot() const {
@@ -290,9 +337,20 @@ std::string Profiler::toJson() const {
            << "  \"quantization_time_ms\": " << quantizationMs << ",\n"
            << "  \"tensor_allocations\": " << metrics.tensorAllocations << ",\n"
            << "  \"gpu_utilization_percent\": "
-           << metrics.gpuUtilizationPercent << ",\n"
+           << (metrics.gpuUtilizationSamples == 0 ? std::string("null") :
+               std::to_string(metrics.gpuUtilizationPercent)) << ",\n"
            << "  \"peak_gpu_utilization_percent\": "
-           << metrics.peakGpuUtilizationPercent << ",\n"
+           << (metrics.gpuUtilizationSamples == 0 ? std::string("null") :
+               std::to_string(metrics.peakGpuUtilizationPercent)) << ",\n"
+           << "  \"cuda_timing_samples\": " << metrics.cudaTimingSamples << ",\n"
+           << "  \"cuda_kernel_time_ms\": " << std::chrono::duration<double, std::milli>(metrics.cudaKernelTime).count() << ",\n"
+           << "  \"cuda_fp32_gemm_time_ms\": " << std::chrono::duration<double, std::milli>(metrics.cudaFp32GemmTime).count() << ",\n"
+           << "  \"cuda_int8_gemm_time_ms\": " << std::chrono::duration<double, std::milli>(metrics.cudaInt8GemmTime).count() << ",\n"
+           << "  \"cuda_expert_gemm_time_ms\": " << std::chrono::duration<double, std::milli>(metrics.cudaExpertGemmTime).count() << ",\n"
+           << "  \"cuda_activation_time_ms\": " << std::chrono::duration<double, std::milli>(metrics.cudaActivationTime).count() << ",\n"
+           << "  \"cuda_attention_core_time_ms\": " << std::chrono::duration<double, std::milli>(metrics.cudaAttentionCoreTime).count() << ",\n"
+           << "  \"cuda_attention_time_ms\": " << std::chrono::duration<double, std::milli>(metrics.cudaAttentionTime).count() << ",\n"
+           << "  \"cuda_expert_execution_time_ms\": " << std::chrono::duration<double, std::milli>(metrics.cudaExpertExecutionTime).count() << ",\n"
            << "  \"modeled_latency_ms\": " << metrics.modeledLatencyMs << "\n"
            << "}\n";
     return output.str();

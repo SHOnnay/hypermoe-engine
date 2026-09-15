@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(HyperMoE VERSION 0.22.0 LANGUAGES CXX)
+project(HyperMoE VERSION 0.23.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -119,6 +119,7 @@ add_library(hypermoe
     src/cache/LFUPolicy.cpp
     src/cache/HybridPolicy.cpp
     src/profiling/Profiler.cpp
+    src/profiling/GpuEventQueue.cpp
     src/profiling/RealModelProfile.cpp
     src/backend/Backend.cpp
     src/backend/CpuBackend.cpp
@@ -127,6 +128,7 @@ add_library(hypermoe
     src/backend/cuda/CudaRuntime.cpp
     src/backend/cuda/CudaRuntimeValidator.cpp
     src/backend/cuda/CudaMemoryPool.cpp
+    src/backend/cuda/Int8GemmPlan.cpp
     src/backend/cuda/CudaStreamManager.cpp
     src/memory/PinnedBuffer.cpp
     src/hardware/HardwareInfo.cpp
@@ -324,9 +326,14 @@ if(HYPERMOE_BUILD_TESTS)
     add_executable(hypermoe_phase22c_tests tests/phase22c_tests.cpp)
     target_link_libraries(hypermoe_phase22c_tests PRIVATE HyperMoE::hypermoe)
     add_test(NAME hypermoe_phase22c COMMAND hypermoe_phase22c_tests)
+    add_executable(hypermoe_phase23_tests tests/phase23_tests.cpp)
+    target_link_libraries(hypermoe_phase23_tests PRIVATE HyperMoE::hypermoe)
+    add_test(NAME hypermoe_phase23 COMMAND hypermoe_phase23_tests)
 endif()
 
 if(HYPERMOE_BUILD_BENCHMARKS)
+    add_executable(hypermoe_int8_gemm_benchmark benchmarks/cuda_compute/int8_gemm_benchmark.cpp)
+    target_link_libraries(hypermoe_int8_gemm_benchmark PRIVATE HyperMoE::hypermoe)
     add_executable(hypermoe_simulation tools/phase1_simulation.cpp)
     target_link_libraries(hypermoe_simulation PRIVATE HyperMoE::hypermoe)
 

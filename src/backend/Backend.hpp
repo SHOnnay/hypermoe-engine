@@ -30,6 +30,7 @@ struct BackendStats {
     std::uint64_t deviceToHostBytes{};
     std::uint64_t synchronizationCount{};
     std::chrono::nanoseconds transferTime{};
+    std::chrono::nanoseconds synchronizationTime{};
 };
 
 class ComputeBackend {

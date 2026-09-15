@@ -212,6 +212,7 @@ struct PackedModelRuntime::Impl {
 };
 
 void PackedRuntimeConfiguration::validate() const {
+    (void)backend::cuda::planInt8Gemm(1, 1, 1, int8GemmMode);
     if (expertDeviceBudgetBytes == 0 || expertRamBudgetBytes == 0 ||
         transferWorkers == 0 || schedulerWorkers == 0 || device.ordinal < 0 ||
         (device.type == tensor::DeviceType::CPU && device.ordinal != 0) ||
@@ -270,7 +271,7 @@ PackedModelRuntime::PackedModelRuntime(
     impl_->profiler = std::make_shared<Profiler>();
     if (configuration.device.type == tensor::DeviceType::CUDA) {
         auto tensorBackend = std::make_shared<tensor::CudaTensorBackend>(
-            configuration.device.ordinal, impl_->profiler);
+            configuration.device.ordinal, impl_->profiler, configuration.int8GemmMode);
         auto computeBackend = std::make_shared<backend::CudaBackend>(
             configuration.device.ordinal);
         if (!tensorBackend->available() || !computeBackend->isAvailable()) {
@@ -521,6 +522,8 @@ tensor::Tensor PackedModelRuntime::materializeHost(tensor::TensorView value) con
 
 PackedRuntimeSnapshot PackedModelRuntime::snapshot() const {
     const auto* cuda = dynamic_cast<const tensor::CudaTensorBackend*>(impl_->tensors.get());
+    const auto tensorStats = cuda ? cuda->backendStats() : backend::BackendStats{};
+    // Query completed CUDA spans before taking the profiler snapshot.
     return {impl_->memory->snapshot(), impl_->experts->stats(),
             impl_->profiler->snapshot(), impl_->history->snapshot(),
             impl_->predictor ? impl_->predictor->qualitySnapshot()
@@ -528,7 +531,7 @@ PackedRuntimeSnapshot PackedModelRuntime::snapshot() const {
             impl_->experts->residencySnapshot(),
             impl_->transferBackend->stats(), impl_->staticStorageBytes,
             impl_->staticExecutionBytes,
-            cuda ? cuda->backendStats() : backend::BackendStats{},
+            tensorStats,
             impl_->configuration.transferComputeOverlap,
             impl_->expertDeviceBudget, impl_->transferBackend->getMemoryInfo()};
 }

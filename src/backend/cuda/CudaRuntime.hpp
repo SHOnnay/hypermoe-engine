@@ -29,6 +29,8 @@ public:
     [[nodiscard]] EventHandle createEvent(bool enableTiming = false);
     void recordEvent(EventHandle event, StreamHandle stream = nullptr);
     void synchronizeEvent(EventHandle event);
+    [[nodiscard]] bool eventComplete(EventHandle event) const;
+    void waitStreamEvent(StreamHandle stream, EventHandle event);
     [[nodiscard]] float elapsedMilliseconds(EventHandle start,
                                             EventHandle end) const;
     void destroyEvent(EventHandle event) noexcept;

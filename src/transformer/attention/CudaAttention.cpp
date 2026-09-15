@@ -53,6 +53,7 @@ AttentionResult CudaAttention::execute(
     const AttentionConfiguration& configuration) {
     auto* cuda = dynamic_cast<tensor::CudaTensorBackend*>(backend_.get());
     if (cuda && cuda->nativeKernelsAvailable()) {
+        auto gpuRegion = cuda->timeRegion(profiling::GpuOperation::AttentionRegion);
         [[maybe_unused]] const auto hiddenOwner = hiddenStates.lockOwner();
         [[maybe_unused]] const auto queryOwner = weights.query.lockOwner();
         [[maybe_unused]] const auto keyOwner = weights.key.lockOwner();
@@ -199,6 +200,7 @@ AttentionResult CudaAttention::execute(
             headDimension, configuration.positionOffset, keyPositionOffset,
             configuration.causal);
         backend_->matmul(result.context.view(), weights.output, result.output.view());
+        gpuRegion.finish();
         return result;
     }
 

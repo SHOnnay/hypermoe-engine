@@ -814,3 +814,26 @@ frequency, recency and confidence-weighted hints deterministically; stale
 favorites no longer dominate forever. Protection is soft scoring, while execution
 leases remain hard exclusions. Legacy standalone Hybrid and LRU stay intact.
 Diagnostics return the eviction policy's real score, not a divergent estimate.
+
+## Why Phase 23 cooperates over K without changing quantization
+
+Single-token INT8 gate/up projection previously launched only three blocks for
+768 outputs, each looping over 2048 inputs. A 32-column by 8-K-lane cooperative
+block and bounded split-K increase independent work while preserving affine
+INT8 storage and FP32 activations. Shared inputs and neighboring weight reads
+improve reuse/coalescing; deterministic partial reduction avoids atomic sums.
+The scalar implementation remains selectable for correctness and timing
+comparison. This is not a Tensor Core implementation or a measured speedup.
+
+## Why deferred timing must also retain tensor ownership
+
+Removing profiler waits exposes asynchronous local-intermediate lifetimes.
+Returning pool buffers at C++ scope exit can recycle storage still referenced
+by GEMM. End-event records therefore retain owners with profiling off as well
+as on. Normal collection only queries; errors and teardown have explicit
+lifetime barriers. Host-copy and expert-lease completion contracts remain.
+New CUDA leaf spans and inclusive regions are reported explicitly, while
+legacy aggregate timers remain for compatibility. Wait time and transfer time
+can overlap and must not be summed into a
+fictional wall-clock breakdown. Missing hardware utilization remains null.
+See [Phase 23 compute audit](components/gpu-compute.md).

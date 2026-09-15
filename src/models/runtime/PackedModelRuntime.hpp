@@ -17,6 +17,7 @@
 #include <memory>
 #include <span>
 #include <string_view>
+#include "backend/cuda/Int8GemmPlan.hpp"
 
 namespace hypermoe::models::runtime {
 
@@ -32,6 +33,7 @@ struct PackedRuntimeConfiguration {
     bool transferComputeOverlap{true};
     bool automaticExpertDeviceBudget{false};
     ExpertDeviceReservations expertDeviceReservations;
+    backend::cuda::Int8GemmMode int8GemmMode{backend::cuda::Int8GemmMode::Auto};
 
     void validate() const;
     [[nodiscard]] static std::size_t parseBudgetBytes(std::string_view text);
